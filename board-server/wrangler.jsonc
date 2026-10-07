@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "deepboard-server",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-07",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Where the app is allowed to be served from. Anything else is refused, so
+  // another website cannot borrow this server. Comma separated, no spaces.
+  "vars": {
+    "ALLOWED_ORIGINS": "http://localhost:60379"
+  },
+
+  "durable_objects": {
+    "bindings": [{ "name": "BOARD_ROOM", "class_name": "BoardRoom" }]
+  },
+
+  // SQLite-backed rooms. This is the only kind included in the free plan.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BoardRoom"] }],
+
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 }
+}
