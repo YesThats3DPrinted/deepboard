@@ -76,6 +76,9 @@ them with `ERR_INVALID_THIS`.
 That opens the app at http://localhost:60379. The first run takes a few minutes
 while it works through the libraries.
 
+If `dev-spa.sh` says Node 18 is missing, it prints the commands that put it
+there. Follow them and run it again.
+
 If the packages have never been installed:
 
 ```bash

@@ -101,6 +101,13 @@ export const PageWebsocket = once(
         this.connectPromise ??= new Resolvable();
         this.syncPromise ??= new Resolvable();
 
+        // Changes are held back for a fifth of a second before being sent, so
+        // they can be bundled. Closing the tab inside that gap would throw the
+        // last few keystrokes away, so send whatever is waiting first.
+        if (typeof window !== 'undefined') {
+          window.addEventListener('beforeunload', this._flushBeforeLeaving);
+        }
+
         void this._openSocket();
       }
 
@@ -214,6 +221,10 @@ export const PageWebsocket = once(
           );
         });
       }
+
+      private _flushBeforeLeaving = () => {
+        this._sendDocSingleUpdateMessageImmediate();
+      };
 
       send(message: Uint8Array, callback?: () => void) {
         if (this.connected) {
@@ -509,6 +520,10 @@ export const PageWebsocket = once(
         this._logger.info('Disconnecting');
 
         this._keepConnected = false;
+
+        if (typeof window !== 'undefined') {
+          window.removeEventListener('beforeunload', this._flushBeforeLeaving);
+        }
 
         this.disableLocalAwareness();
 
