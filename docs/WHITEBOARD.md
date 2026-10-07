@@ -126,8 +126,10 @@ cd board-server
 npx wrangler secret put BOARD_PASSWORD
 ```
 
-Everybody has to type the new one once. Old passes keep working for up to half a
-day, so somebody already using a board is not thrown out straight away.
+Everybody has to type the new one once. Changing it stops every pass already
+handed out straight away, which is the point: somebody who got hold of a pass
+loses it the moment the password changes. People with a board open are asked for
+the new password where they stand; their work is not lost.
 
 ### Allowing a new web address
 
@@ -168,3 +170,10 @@ test talks to the real server instead.
   server, so everybody sees the same names.
 - **There is no history.** The old app could keep snapshots of a page; this one
   keeps only what is on the board now.
+- **Boards cannot be deleted.** Pressing Delete page says so rather than
+  pretending. Empty a board instead, or just stop linking to it.
+- **Two people opening the same brand-new board in the same few seconds** is
+  handled: one builds it and the other waits. Two people doing it more than
+  three seconds apart on a board that still has nothing on it can each start
+  their own, and one set of notes may be lost. Make a board, put something on
+  it, and then share the link.
