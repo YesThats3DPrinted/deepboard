@@ -3,32 +3,70 @@ import {
   CollabMessageType,
   CollabServerDocMessageType,
 } from '@deeplib/misc';
-import { wrapSymmetricKey } from '@stdlib/crypto';
-import { ClientSocket } from '@stdlib/misc';
 import { Resolvable } from '@stdlib/misc';
 import { Y } from '@syncedstore/core';
 import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
 import { cloneDeep, once, throttle } from 'lodash';
+import { getBoardPass, renewBoardPass } from 'src/code/areas/board/pass';
 import { isWithinTimeout } from 'src/code/utils/misc';
 import * as awarenessProtocol from 'y-protocols/awareness';
 
-import { groupContentKeyrings } from '../../computed/group-content-keyrings';
-import { pageKeyrings } from '../../computed/page-keyrings';
 import type { Page } from '../page';
 import type { PageCollab } from './collab';
 import type { IAwarenessChanges } from './presence';
 
+/**
+ * The link between one open board and the board server.
+ *
+ * Changes travel as plain Yjs updates: nothing is scrambled, because there are
+ * no per-person keys in this build. The board server stores them and passes
+ * them to everybody else who has the same board open.
+ *
+ * The password is never sent here. The browser trades it for a pass once (see
+ * `areas/board/pass.ts`) and that pass is handed over as the connection's
+ * sub-protocol, which is the only thing a browser is allowed to put on a web
+ * socket besides the address itself.
+ */
+
+/** Wait this long before the first retry, then double it, up to five seconds. */
+const FIRST_RETRY_DELAY_MS = 500;
+const LONGEST_RETRY_DELAY_MS = 5_000;
+
+/**
+ * Two failed handshakes in a row means the pass is being refused rather than
+ * the server being down, so it is worth asking for the password again.
+ */
+const FAILURES_BEFORE_ASKING_AGAIN = 2;
+
 export const PageWebsocket = once(
   () =>
-    class extends ClientSocket() {
+    class {
       private readonly _logger;
 
       readonly page: Page;
       readonly collab: PageCollab;
 
       readonly doc;
+
+      /**
+       * Where everybody's cursors are. The board makes this, not the
+       * connection, and the text editor reads it straight off here — so it
+       * must stay the very same object, and must never be destroyed from here.
+       */
       readonly awareness;
+
+      private readonly _url: string;
+
+      socket?: WebSocket;
+
+      connectPromise?: Resolvable;
+      syncPromise?: Resolvable;
+
+      private _keepConnected = false;
+      private _retryDelay = FIRST_RETRY_DELAY_MS;
+      private _openedThisAttempt = false;
+      private _failedHandshakes = 0;
 
       private readonly _updateBuffer: Uint8Array[] = [];
 
@@ -37,26 +75,79 @@ export const PageWebsocket = once(
 
       private _localAwarenessEnabled = false;
 
-      syncPromise?: Resolvable;
-
       constructor(input: { collab: PageCollab }) {
-        super(`${process.env.COLLAB_SERVER_URL}/page:${input.collab.page.id}`);
-
         this.page = input.collab.page;
         this.collab = input.collab;
 
         this.doc = input.collab.doc;
         this.awareness = input.collab.presence.awareness;
 
+        this._url = `${process.env.COLLAB_SERVER_URL}/page:${this.page.id}`;
+
         this._logger = mainLogger.sub('Websocket').sub(this.page.id);
       }
 
-      connect() {
-        super.connect();
+      get connected() {
+        return this.socket?.readyState === WebSocket.OPEN;
+      }
 
+      connect() {
+        if (this.socket != null) {
+          return;
+        }
+
+        this._keepConnected = true;
+
+        this.connectPromise ??= new Resolvable();
         this.syncPromise ??= new Resolvable();
 
-        this.socket?.addEventListener('open', () => {
+        void this._openSocket();
+      }
+
+      private async _openSocket() {
+        const pass = await getBoardPass();
+
+        if (!this._keepConnected || this.socket != null) {
+          return;
+        }
+
+        if (pass == null) {
+          this._logger.error('No pass, cannot open the board');
+          return;
+        }
+
+        this._openedThisAttempt = false;
+
+        const socket = new WebSocket(this._url, [pass]);
+
+        socket.binaryType = 'arraybuffer';
+
+        this.socket = socket;
+
+        socket.addEventListener('error', (event) => {
+          if (this.socket !== event.target) {
+            return;
+          }
+
+          this._logger.error('Websocket error %o', event);
+        });
+
+        socket.addEventListener('open', () => {
+          if (this.socket !== socket) {
+            return;
+          }
+
+          this._logger.info('Websocket opened');
+
+          this._openedThisAttempt = true;
+          this._failedHandshakes = 0;
+          this._retryDelay = FIRST_RETRY_DELAY_MS;
+
+          this.connectPromise?.resolve();
+          this.connectPromise = undefined;
+
+          // Anything the server never confirmed goes back in the queue, so a
+          // change made while the connection was down is not lost.
           if (this._unackedUpdates.size > 0) {
             this._updateBuffer.push(...this._unackedUpdates.values());
 
@@ -70,10 +161,75 @@ export const PageWebsocket = once(
           }
         });
 
-        this.socket?.addEventListener('message', (event) => {
-          this._handleMessage(new Uint8Array(event.data));
+        socket.addEventListener('message', (event) => {
+          if (this.socket !== socket) {
+            return;
+          }
+
+          this._handleMessage(new Uint8Array(event.data as ArrayBuffer));
+        });
+
+        socket.addEventListener('close', () => {
+          if (this.socket !== socket) {
+            return;
+          }
+
+          this._logger.info('Websocket closed');
+
+          this.socket = undefined;
+
+          if (!this._keepConnected) {
+            return;
+          }
+
+          // A connection that closes without ever opening was refused. The
+          // likeliest reason is a pass that has run out.
+          if (!this._openedThisAttempt) {
+            this._failedHandshakes++;
+
+            if (this._failedHandshakes >= FAILURES_BEFORE_ASKING_AGAIN) {
+              this._failedHandshakes = 0;
+
+              void renewBoardPass().then(() => {
+                if (this._keepConnected) {
+                  void this._openSocket();
+                }
+              });
+
+              return;
+            }
+          }
+
+          const delay = Math.min(this._retryDelay, LONGEST_RETRY_DELAY_MS);
+
+          this._retryDelay = delay * 2;
+
+          setTimeout(
+            () => {
+              if (this._keepConnected) {
+                void this._openSocket();
+              }
+            },
+            delay + delay * Math.random(),
+          );
         });
       }
+
+      send(message: Uint8Array, callback?: () => void) {
+        if (this.connected) {
+          this.socket?.send(message);
+
+          callback?.();
+        } else {
+          void this.connectPromise?.then(() => {
+            this.socket?.send(message);
+
+            callback?.();
+          });
+        }
+      }
+
+      // Presence
 
       enableLocalAwareness() {
         if (!this.connected) {
@@ -94,15 +250,9 @@ export const PageWebsocket = once(
           cloneDeep((this as any).awareness.localStateBackup),
         );
 
-        // Send awareness message
-
         this._sendAwarenessMessageImmediate();
 
-        // Setup update listener
-
         this.awareness.on('update', this._handleAwarenessUpdate);
-
-        // Setup unload listener
 
         if (typeof window !== 'undefined') {
           window.addEventListener('beforeunload', this.disableLocalAwareness);
@@ -119,8 +269,6 @@ export const PageWebsocket = once(
 
         this._logger.info('Disable local awareness');
 
-        // Clear unload listener
-
         if (typeof window !== 'undefined') {
           window.removeEventListener(
             'beforeunload',
@@ -130,11 +278,7 @@ export const PageWebsocket = once(
           process.off('exit', this.disableLocalAwareness);
         }
 
-        // Clear update listener
-
         this.awareness.off('update', this._handleAwarenessUpdate);
-
-        // Send awareness state removal
 
         awarenessProtocol.removeAwarenessStates(
           this.awareness,
@@ -142,10 +286,15 @@ export const PageWebsocket = once(
           null,
         );
 
-        this._sendAwarenessMessageImmediate();
+        // Only worth sending while the connection is actually open. Queuing it
+        // would be pointless: the message says "I have gone", and it is being
+        // sent because this connection is going away.
+        if (this.connected) {
+          this._sendAwarenessMessageImmediate();
+        }
       };
 
-      // Document update handling
+      // Changes going out
 
       private _handleDocUpdate = (update: Uint8Array, origin: any) => {
         if (origin === this) {
@@ -157,194 +306,12 @@ export const PageWebsocket = once(
         this._sendDocSingleUpdateMessageThrottled();
       };
 
-      private _sendDocAllUpdatesUnmergedResponseMessage(input: {
-        requestIdBytes: Uint8Array;
-
-        rotatePageKey: boolean;
-        encryptedPageRelativeTitle: Uint8Array;
-        encryptedPageAbsoluteTitle: Uint8Array;
-        encryptedSnapshotSymmetricKeys: Map<string, Uint8Array>;
-
-        createSnapshot: boolean;
-        updateIndex: number;
-      }) {
-        let pageKeyring = pageKeyrings()(
-          `${this.page.react.groupId}:${this.page.id}`,
-        ).get()!;
-
-        if (pageKeyring == null) {
-          return;
-        }
-
-        const encoder = encoding.createEncoder();
-
-        // Write headers
-
-        encoding.writeVarUint(encoder, CollabMessageType.DOC);
-        encoding.writeVarUint(
-          encoder,
-          CollabClientDocMessageType.ALL_UPDATES_UNMERGED_RESPONSE,
-        );
-
-        // Write request ID
-
-        encoding.writeVarUint8Array(encoder, input.requestIdBytes);
-
-        // Rotate page key
-
-        encoding.writeUint8(encoder, input.rotatePageKey ? 1 : 0);
-
-        if (input.rotatePageKey) {
-          this._logger.info('Rotating page key');
-
-          const oldPageKeyring = pageKeyring;
-          const newPageKeyring = oldPageKeyring.addKey();
-          pageKeyring = newPageKeyring;
-
-          const groupContentKeyring = groupContentKeyrings()(
-            this.page.react.groupId,
-          ).get()!;
-
-          encoding.writeVarUint8Array(
-            encoder,
-            newPageKeyring.wrapSymmetric(groupContentKeyring, {
-              associatedData: {
-                context: 'PageKeyring',
-                pageId: this.page.id,
-              },
-            }).wrappedValue,
-          );
-
-          encoding.writeVarUint8Array(
-            encoder,
-            newPageKeyring.encrypt(
-              oldPageKeyring.decrypt(input.encryptedPageRelativeTitle, {
-                padding: true,
-                associatedData: {
-                  context: 'PageRelativeTitle',
-                  pageId: this.page.id,
-                },
-              }),
-              {
-                padding: true,
-                associatedData: {
-                  context: 'PageRelativeTitle',
-                  pageId: this.page.id,
-                },
-              },
-            ),
-          );
-
-          encoding.writeVarUint8Array(
-            encoder,
-            newPageKeyring.encrypt(
-              oldPageKeyring.decrypt(input.encryptedPageAbsoluteTitle, {
-                padding: true,
-                associatedData: {
-                  context: 'PageAbsoluteTitle',
-                  pageId: this.page.id,
-                },
-              }),
-              {
-                padding: true,
-                associatedData: {
-                  context: 'PageAbsoluteTitle',
-                  pageId: this.page.id,
-                },
-              },
-            ),
-          );
-
-          encoding.writeVarUint(
-            encoder,
-            input.encryptedSnapshotSymmetricKeys.size,
-          );
-
-          for (const [
-            snapshotId,
-            encryptedSymmetricKey,
-          ] of input.encryptedSnapshotSymmetricKeys) {
-            encoding.writeVarString(encoder, snapshotId);
-
-            encoding.writeVarUint8Array(
-              encoder,
-              newPageKeyring.encrypt(
-                oldPageKeyring.decrypt(encryptedSymmetricKey, {
-                  associatedData: {
-                    context: 'PageSnapshotSymmetricKey',
-                    pageId: this.page.id,
-                  },
-                }),
-                {
-                  associatedData: {
-                    context: 'PageSnapshotSymmetricKey',
-                    pageId: this.page.id,
-                  },
-                },
-              ),
-            );
-          }
-        }
-
-        // Write full update
-
-        encoding.writeVarUint(encoder, input.updateIndex);
-
-        const rawUpdate = Y.encodeStateAsUpdateV2(this.doc);
-        const encryptedUpdate = pageKeyring.encrypt(rawUpdate, {
-          padding: true,
-          associatedData: {
-            context: 'PageDocUpdate',
-            pageId: this.page.id,
-          },
-        });
-        encoding.writeVarUint8Array(encoder, encryptedUpdate);
-
-        encoding.writeUint8(encoder, input.createSnapshot ? 1 : 0);
-
-        if (input.createSnapshot) {
-          const snapshotSymmetricKey = wrapSymmetricKey();
-
-          const snapshotEncryptedSymmetricKey = pageKeyring.encrypt(
-            snapshotSymmetricKey.value,
-            {
-              associatedData: {
-                context: 'PageSnapshotSymmetricKey',
-                pageId: this.page.id,
-              },
-            },
-          );
-
-          const snapshotEncryptedData = snapshotSymmetricKey.encrypt(
-            rawUpdate,
-            {
-              padding: true,
-              associatedData: {
-                context: 'PageSnapshotData',
-                pageId: this.page.id,
-              },
-            },
-          );
-
-          encoding.writeVarUint8Array(encoder, snapshotEncryptedSymmetricKey);
-
-          encoding.writeVarUint8Array(encoder, snapshotEncryptedData);
-        }
-
-        // Send message
-
-        this.send(encoding.toUint8Array(encoder), () => {
-          this._logger.info('Doc all updates merged message sent');
-        });
-      }
-
       private _sendDocSingleUpdateMessageImmediate() {
         if (this._updateBuffer.length === 0) {
           return;
         }
 
         const mergedUpdate = Y.mergeUpdatesV2(this._updateBuffer);
-        this._updateBuffer.length = 0;
 
         const encoder = encoding.createEncoder();
 
@@ -354,42 +321,28 @@ export const PageWebsocket = once(
           CollabClientDocMessageType.SINGLE_UPDATE,
         );
 
-        this._unackedUpdates.set(this._updateId, mergedUpdate);
-
-        const pageKeyring = pageKeyrings()(
-          `${this.page.react.groupId}:${this.page.id}`,
-        ).get()!;
-
-        if (pageKeyring == null) {
-          return;
-        }
-
-        const encryptedUpdate = pageKeyring.encrypt(mergedUpdate, {
-          padding: true,
-          associatedData: {
-            context: 'PageDocUpdate',
-            pageId: this.page.id,
-          },
-        });
-
         encoding.writeVarUint(encoder, this._updateId);
-        encoding.writeVarUint8Array(encoder, encryptedUpdate);
+        encoding.writeVarUint8Array(encoder, mergedUpdate);
+
+        // Only clear the queue once the change is definitely on its way and
+        // recorded as unconfirmed. Clearing any earlier loses the change if
+        // anything below throws.
+        this._unackedUpdates.set(this._updateId, mergedUpdate);
+        this._updateBuffer.length = 0;
+
+        const updateId = this._updateId++;
 
         this.send(encoding.toUint8Array(encoder), () => {
           this._logger.info(
-            `Doc single update message sent (id: ${this._updateId}, size: ${encryptedUpdate.length})`,
+            `Doc single update message sent (id: ${updateId}, size: ${mergedUpdate.length})`,
           );
         });
-
-        ++this._updateId;
       }
       private _sendDocSingleUpdateMessageThrottled = throttle(
         () => this._sendDocSingleUpdateMessageImmediate(),
         200,
         { leading: false },
       );
-
-      // Awareness update handling
 
       private _handleAwarenessUpdate = ({
         added,
@@ -410,25 +363,9 @@ export const PageWebsocket = once(
       };
 
       private _sendAwarenessMessageImmediate = () => {
-        const pageKeyring = pageKeyrings()(
-          `${this.page.react.groupId}:${this.page.id}`,
-        ).get()!;
-
-        if (pageKeyring == null) {
-          return;
-        }
-
-        const awarenessUpdate = pageKeyring.encrypt(
-          awarenessProtocol.encodeAwarenessUpdate(this.awareness, [
-            this.doc.clientID,
-          ]),
-          {
-            padding: true,
-            associatedData: {
-              context: 'PageAwarenessUpdate',
-              pageId: this.page.id,
-            },
-          },
+        const awarenessUpdate = awarenessProtocol.encodeAwarenessUpdate(
+          this.awareness,
+          [this.doc.clientID],
         );
 
         const encoder = encoding.createEncoder();
@@ -449,7 +386,7 @@ export const PageWebsocket = once(
         { leading: false },
       );
 
-      // Message handling
+      // Changes coming in
 
       private _handleMessage(message: Uint8Array) {
         const decoder = decoding.createDecoder(message);
@@ -463,40 +400,28 @@ export const PageWebsocket = once(
             this._handleDocMessage(decoder);
             break;
           default:
-            this._logger.error('Unable to compute message');
+            this._logger.error(`Unknown message type ${messageType}`);
         }
       }
+
       private _handleAwarenessMessage(decoder: decoding.Decoder) {
-        this._logger.info('Awareness message received');
-
-        const pageKeyring = pageKeyrings()(
-          `${this.page.react.groupId}:${this.page.id}`,
-        ).get()!;
-
-        if (pageKeyring == null) {
-          return;
-        }
-
         const numUpdates = decoding.readVarUint(decoder);
 
         for (let i = 0; i < numUpdates; i++) {
           try {
             awarenessProtocol.applyAwarenessUpdate(
               this.awareness,
-              pageKeyring.decrypt(decoding.readVarUint8Array(decoder), {
-                padding: true,
-                associatedData: {
-                  context: 'PageAwarenessUpdate',
-                  pageId: this.page.id,
-                },
-              }),
+              decoding.readVarUint8Array(decoder),
               this,
             );
           } catch (error) {
-            // this._logger.error(error);
+            // One unreadable cursor must not throw away the rest. Logged
+            // because a silent catch here once hid a whole broken format.
+            this._logger.error('Bad awareness update %o', error);
           }
         }
       }
+
       private _handleDocMessage(decoder: decoding.Decoder) {
         const syncMessageType = decoding.readVarUint(decoder);
 
@@ -510,42 +435,34 @@ export const PageWebsocket = once(
           case CollabServerDocMessageType.SINGLE_UPDATE_ACK:
             this._handleDocSingleUpdateAckMessage(decoder);
             break;
+          default:
+            this._logger.error(`Unknown doc message type ${syncMessageType}`);
         }
       }
 
-      // Update message handling
-
+      /**
+       * Everything on the board, sent the moment a connection opens.
+       *
+       * The board only starts listening for its own changes once this arrives,
+       * which is why the server always sends it, even for an empty board.
+       */
       private _handleDocAllUpdatesUnmergedMessage(decoder: decoding.Decoder) {
         this._logger.info('Doc all updates unmerged message received');
 
-        const pageKeyring = pageKeyrings()(
-          `${this.page.react.groupId}:${this.page.id}`,
-        ).get()!;
-
-        if (pageKeyring == null) {
-          return;
-        }
-
-        // Read updates
-
-        const updateIndex = decoding.readVarUint(decoder);
+        decoding.readVarUint(decoder); // highest change number, not needed here
 
         const numUpdates = decoding.readVarUint(decoder);
 
         this.doc.transact(() => {
           for (let i = 0; i < numUpdates; i++) {
             try {
-              const encryptedUpdate = decoding.readVarUint8Array(decoder);
-              const rawUpdate = pageKeyring.decrypt(encryptedUpdate, {
-                padding: true,
-                associatedData: {
-                  context: 'PageDocUpdate',
-                  pageId: this.page.id,
-                },
-              });
-              Y.applyUpdateV2(this.doc, rawUpdate, this);
+              Y.applyUpdateV2(
+                this.doc,
+                decoding.readVarUint8Array(decoder),
+                this,
+              );
             } catch (error) {
-              // this._logger.error(error);
+              this._logger.error('Bad stored change %o', error);
             }
           }
         });
@@ -553,79 +470,28 @@ export const PageWebsocket = once(
         this.syncPromise?.resolve();
         this.syncPromise = undefined;
 
+        // Listen for our own changes from here on. Added after the stored ones
+        // are applied so opening a board does not send it all straight back.
+        this.doc.off('updateV2', this._handleDocUpdate);
         this.doc.on('updateV2', this._handleDocUpdate);
 
-        // Check if requested merged updates
-
-        const rotatePageKey = decoding.readUint8(decoder) === 1;
-
-        let encryptedPageRelativeTitle: Uint8Array | undefined;
-        let encryptedPageAbsoluteTitle: Uint8Array | undefined;
-
-        const encryptedSnapshotSymmetricKeys = new Map<string, Uint8Array>();
-
-        if (rotatePageKey) {
-          encryptedPageRelativeTitle = decoding.readVarUint8Array(decoder);
-          encryptedPageAbsoluteTitle = decoding.readVarUint8Array(decoder);
-
-          const numSnapshotSymmetricKeys = decoding.readVarUint(decoder);
-
-          for (let i = 0; i < numSnapshotSymmetricKeys; i++) {
-            const snapshotId = decoding.readVarString(decoder);
-            const encryptedSymmetricKey = decoding.readVarUint8Array(decoder);
-
-            encryptedSnapshotSymmetricKeys.set(
-              snapshotId,
-              encryptedSymmetricKey,
-            );
-          }
-        }
-
-        const createSnapshot = decoding.readUint8(decoder) === 1;
-
-        if (rotatePageKey || createSnapshot) {
-          const requestIdBytes = decoding.readVarUint8Array(decoder);
-
-          this._sendDocAllUpdatesUnmergedResponseMessage({
-            requestIdBytes,
-
-            rotatePageKey,
-            encryptedPageRelativeTitle: encryptedPageRelativeTitle!,
-            encryptedPageAbsoluteTitle: encryptedPageAbsoluteTitle!,
-            encryptedSnapshotSymmetricKeys,
-
-            createSnapshot,
-            updateIndex,
-          });
-        }
+        // The old server could ask the browser to re-key the board or take a
+        // snapshot here. This one never does, and both flags are always off.
+        decoding.readUint8(decoder);
+        decoding.readUint8(decoder);
       }
 
       private _handleDocSingleUpdateMessage(decoder: decoding.Decoder) {
-        const pageKeyring = pageKeyrings()(
-          `${this.page.react.groupId}:${this.page.id}`,
-        ).get()!;
-
-        if (pageKeyring == null) {
-          return;
-        }
-
         try {
-          const encryptedUpdate = decoding.readVarUint8Array(decoder);
+          const update = decoding.readVarUint8Array(decoder);
 
           this._logger.info(
-            `Doc single update message received (size: ${encryptedUpdate.length})`,
+            `Doc single update message received (size: ${update.length})`,
           );
 
-          const rawUpdate = pageKeyring.decrypt(encryptedUpdate, {
-            padding: true,
-            associatedData: {
-              context: 'PageDocUpdate',
-              pageId: this.page.id,
-            },
-          });
-          Y.applyUpdateV2(this.doc, rawUpdate, this);
+          Y.applyUpdateV2(this.doc, update, this);
         } catch (error) {
-          // this._logger.error(error);
+          this._logger.error('Bad change from somebody else %o', error);
         }
       }
 
@@ -639,14 +505,21 @@ export const PageWebsocket = once(
         );
       }
 
-      override disconnect() {
+      disconnect() {
         this._logger.info('Disconnecting');
 
-        this.syncPromise = undefined;
+        this._keepConnected = false;
 
         this.disableLocalAwareness();
 
-        super.disconnect();
+        this.connectPromise = undefined;
+        this.syncPromise = undefined;
+
+        if (this.socket?.readyState === WebSocket.OPEN) {
+          this.socket.close();
+        }
+
+        this.socket = undefined;
       }
 
       destroy() {

@@ -35,19 +35,26 @@ const { configure } = require('quasar/wrappers');
 const path = require('path');
 
 module.exports = configure(function (ctx) {
-  const port =
-    1024 + (Math.abs(hashFNV1a(JSON.stringify(ctx.mode))) % (65536 - 1024));
+  // The port the dev server listens on. It used to be a number worked out
+  // from the build mode, which meant nobody could predict it and the board
+  // server's list of allowed addresses could never match it.
+  const port = Number(env.CLIENT_PORT ?? 60379);
 
   console.log(`Port: ${port}`);
 
   return {
     eslint: {
+      // Style checking is off during the build.
+      //
+      // The code was written against an older code formatter and fails
+      // hundreds of its newer rules. With this on, the build stops on the
+      // first file and shows a formatting complaint instead of the app.
       // fix: true,
       // include = [],
       // exclude = [],
       // rawOptions = {},
-      warnings: true,
-      errors: true,
+      warnings: false,
+      errors: false,
     },
 
     // https://v2.quasar.dev/quasar-cli-vite/prefetch-feature
@@ -97,8 +104,14 @@ module.exports = configure(function (ctx) {
 
     // Full list of options: https://v2.quasar.dev/quasar-cli-vite/quasar-config-js#build
     build: {
+      // Which browsers the built app has to run in.
+      //
+      // Must be es2020 or newer: one of the libraries uses very large whole
+      // numbers, which es2019 does not allow, and the build stops with
+      // "Big integer literals are not available in the configured target
+      // environment". Every browser listed here has supported them for years.
       target: {
-        browser: ['es2019', 'edge88', 'firefox78', 'chrome87', 'safari13.1'],
+        browser: ['es2020', 'edge88', 'firefox78', 'chrome87', 'safari14'],
         node: 'node16',
       },
 

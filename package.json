@@ -37,6 +37,12 @@
   "pnpm": {
     "patchedDependencies": {
       "dotenv-expand@9.0.0": "patches/dotenv-expand@9.0.0.patch"
+    },
+    "overrides": {
+      "@quasar/vite-plugin": "1.5.0",
+      "prosemirror-model": "1.25.3",
+      "prosemirror-view": "1.41.3",
+      "y-prosemirror": "^1.2.12"
     }
   },
   "private": true,

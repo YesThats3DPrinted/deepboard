@@ -1,5 +1,11 @@
 lockfileVersion: 5.4
 
+overrides:
+  '@quasar/vite-plugin': 1.5.0
+  prosemirror-model: 1.25.3
+  prosemirror-view: 1.41.3
+  y-prosemirror: ^1.2.12
+
 patchedDependencies:
   dotenv-expand@9.0.0:
     hash: adqtadvolhkco6cfvcsvmd42ua
@@ -256,9 +262,9 @@ importers:
       pinia: ~2.0.36
       process: ^0.11.10
       prom-client: ^15.0.0
-      prosemirror-model: ~1.18.3
+      prosemirror-model: 1.25.3
       prosemirror-state: ~1.4.3
-      prosemirror-view: ~1.29.2
+      prosemirror-view: 1.41.3
       qrcode: ^1.5.3
       quasar: npm:@deepnotes/quasar@^2.13.2
       serialize-javascript: ^6.0.1
@@ -274,7 +280,7 @@ importers:
       vue: ~3.2.47
       vue-i18n: ^9.6.5
       vue-router: ^4.2.5
-      y-prosemirror: ~1.0.20
+      y-prosemirror: ^1.2.12
       y-protocols: ^1.0.6
       yjs: ^13.6.8
       zod: ^3.22.4
@@ -294,8 +300,8 @@ importers:
       '@syncedstore/core': 0.6.0_yjs@13.6.27
       '@tiptap/core': 2.26.3_@tiptap+pm@2.26.3
       '@tiptap/extension-code-block-lowlight': 2.26.3_j6fxfg4dgl6tafrggqqd36etbe
-      '@tiptap/extension-collaboration': 2.26.3_wcruue23cprryoqdlibuq36klu
-      '@tiptap/extension-collaboration-cursor': /@deepnotes/tiptap-extension-collaboration-cursor/2.0.0-beta.202_na4gmyay7umbdj5e3exkqylncu
+      '@tiptap/extension-collaboration': 2.26.3_pd7ffeqetg5lfpf5hrrkcbp4sy
+      '@tiptap/extension-collaboration-cursor': /@deepnotes/tiptap-extension-collaboration-cursor/2.0.0-beta.202_dg7zwyvepgksqtk646ruf6o2uy
       '@tiptap/extension-highlight': 2.26.3_@tiptap+core@2.26.3
       '@tiptap/extension-horizontal-rule': 2.26.3_wladjzeu5bu4ulajmlecl3fvqq
       '@tiptap/extension-image': 2.26.3_@tiptap+core@2.26.3
@@ -351,9 +357,9 @@ importers:
       pinia: 2.0.36_vue@3.2.47
       process: 0.11.10
       prom-client: 15.1.3
-      prosemirror-model: 1.18.3
+      prosemirror-model: 1.25.3
       prosemirror-state: 1.4.3
-      prosemirror-view: 1.29.2
+      prosemirror-view: 1.41.3
       qrcode: 1.5.4
       quasar: /@deepnotes/quasar/2.13.2
       serialize-javascript: 6.0.2
@@ -365,7 +371,7 @@ importers:
       vue: 3.2.47
       vue-i18n: 9.14.5_vue@3.2.47
       vue-router: 4.5.1_vue@3.2.47
-      y-prosemirror: 1.0.20_7lcw2szygsvehgm3zxzfqeybia
+      y-prosemirror: 1.3.7_4cugzdeuy3ab4kstqr3tkklk3u
       y-protocols: 1.0.6_yjs@13.6.27
       yjs: 13.6.27
       zod: 3.25.76
@@ -802,10 +808,10 @@ packages:
     resolution: {integrity: sha512-su3pbFi1DT89g6Cuh72TE0MWWKHmWgHcQJ3ODRkm6XfIppWaGpU49t02ur3sgJc7hUhfQXjB93aSkDgOmIii2w==}
     dependencies:
       prosemirror-keymap: 1.2.3
-      prosemirror-model: 1.18.3
+      prosemirror-model: 1.25.3
       prosemirror-state: 1.4.3
       prosemirror-transform: 1.10.4
-      prosemirror-view: 1.29.2
+      prosemirror-view: 1.41.3
     dev: false
 
   /@antfu/utils/0.7.10:
@@ -1156,7 +1162,7 @@ packages:
         optional: true
     dependencies:
       '@quasar/render-ssr-error': 1.0.3
-      '@quasar/vite-plugin': 1.10.0_3q7x7mgtag3b4u5z3sbo2bfnp4
+      '@quasar/vite-plugin': 1.5.0_3q7x7mgtag3b4u5z3sbo2bfnp4
       '@rollup/pluginutils': 4.2.1
       '@types/chrome': 0.0.208
       '@types/compression': 1.8.1
@@ -1219,13 +1225,13 @@ packages:
       copy-anything: 3.0.5
     dev: false
 
-  /@deepnotes/tiptap-extension-collaboration-cursor/2.0.0-beta.202_na4gmyay7umbdj5e3exkqylncu:
+  /@deepnotes/tiptap-extension-collaboration-cursor/2.0.0-beta.202_dg7zwyvepgksqtk646ruf6o2uy:
     resolution: {integrity: sha512-PUor3vgCHaQd3SpVN4v7bShryUx+xVJUaSvyoZd2CndiT5+Gnn1cvoma7Q9AQEiQgAUBK8kgy3ZWLL5bt/JMwg==}
     peerDependencies:
       '@tiptap/core': ^2.0.0-beta.193
     dependencies:
       '@tiptap/core': 2.26.3_@tiptap+pm@2.26.3
-      y-prosemirror: 1.0.20_7lcw2szygsvehgm3zxzfqeybia
+      y-prosemirror: 1.3.7_4cugzdeuy3ab4kstqr3tkklk3u
     transitivePeerDependencies:
       - prosemirror-model
       - prosemirror-state
@@ -3197,13 +3203,13 @@ packages:
       stack-trace: 1.0.0-pre2
     dev: true
 
-  /@quasar/vite-plugin/1.10.0_3q7x7mgtag3b4u5z3sbo2bfnp4:
-    resolution: {integrity: sha512-4PJoTclz4ZjAfyqe0+hlkKcFJt0e2NX3Ac3hy8ILqUPdtZ24nCo5/xEHvTxZGBQMKRPwwePbO8CVs4n9EKJEug==}
-    engines: {node: '>=20'}
+  /@quasar/vite-plugin/1.5.0_3q7x7mgtag3b4u5z3sbo2bfnp4:
+    resolution: {integrity: sha512-Kd4nFeWd0eAr7e+HMY8Wtmo86RjPZhCi6/bybTAyliFmS8AhZ2/oRTOGnBD9R1C6Ub3JPzC4eWFA20IlHa5A3w==}
+    engines: {node: '>=12'}
     peerDependencies:
-      '@vitejs/plugin-vue': ^2.0.0 || ^3.0.0 || ^4.0.0 || ^5.0.0 || ^6.0.0
-      quasar: ^2.16.0
-      vite: ^2.0.0 || ^3.0.0 || ^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0
+      '@vitejs/plugin-vue': ^2.0.0 || ^3.0.0 || ^4.0.0 || ^5.0.0-beta.0
+      quasar: ^2.8.0
+      vite: ^2.0.0 || ^3.0.0 || ^4.0.0 || ^5.0.0-beta.0
       vue: ^3.0.0
     dependencies:
       '@vitejs/plugin-vue': 2.3.4_vite@2.9.18+vue@3.2.47
@@ -3613,7 +3619,7 @@ packages:
       '@tiptap/core': 2.26.3_@tiptap+pm@2.26.3
     dev: false
 
-  /@tiptap/extension-collaboration/2.26.3_wcruue23cprryoqdlibuq36klu:
+  /@tiptap/extension-collaboration/2.26.3_pd7ffeqetg5lfpf5hrrkcbp4sy:
     resolution: {integrity: sha512-GunFZf851Z15odBBEY0IUhOmg81wyNfM0ld54+Yncqbl5wOfqxlYwCCpeCMdLMjZ/7ZnEMqZz6gcC1ZZk4P7lg==}
     peerDependencies:
       '@tiptap/core': ^2.7.0
@@ -3622,7 +3628,7 @@ packages:
     dependencies:
       '@tiptap/core': 2.26.3_@tiptap+pm@2.26.3
       '@tiptap/pm': 2.26.3
-      y-prosemirror: 1.0.20_7lcw2szygsvehgm3zxzfqeybia
+      y-prosemirror: 1.3.7_4cugzdeuy3ab4kstqr3tkklk3u
     dev: false
 
   /@tiptap/extension-document/2.26.3_@tiptap+core@2.26.3:
@@ -3814,9 +3820,9 @@ packages:
     dependencies:
       '@_ueberdosis/prosemirror-tables': 1.1.3
       '@tiptap/core': 2.26.3_@tiptap+pm@2.26.3
-      prosemirror-model: 1.18.3
+      prosemirror-model: 1.25.3
       prosemirror-state: 1.4.3
-      prosemirror-view: 1.29.2
+      prosemirror-view: 1.41.3
     dev: false
 
   /@tiptap/extension-task-item/2.26.3_wladjzeu5bu4ulajmlecl3fvqq:
@@ -8824,6 +8830,7 @@ packages:
 
   /glob/10.4.5:
     resolution: {integrity: sha512-7Bv8RF0k6xjo7d4A/PxYLbUCfb6c+Vpd2/mB2yRDlew7Jb5hEXiCD9ibfO7wpk8i4sevK6DFny9h7EYbM3/sHg==}
+    deprecated: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
     hasBin: true
     dependencies:
       foreground-child: 3.3.1
@@ -8836,7 +8843,7 @@ packages:
 
   /glob/7.2.3:
     resolution: {integrity: sha512-nFR0zLpU2YCaRxwoCJvL6UvCH2JFyFVIvwTLsIf21AuHlMskA1hhTdk+LlYJtOlYt9v6dvszD2BGRqBL+iQK9Q==}
-    deprecated: Glob versions prior to v9 are no longer supported
+    deprecated: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
     dependencies:
       fs.realpath: 1.0.0
       inflight: 1.0.6
@@ -11969,12 +11976,6 @@ packages:
       prosemirror-state: 1.4.3
     dev: false
 
-  /prosemirror-model/1.18.3:
-    resolution: {integrity: sha512-yUVejauEY3F1r7PDy4UJKEGeIU+KFc71JQl5sNvG66CLVdKXRjhWpBW6KMeduGsmGOsw85f6EGrs6QxIKOVILA==}
-    dependencies:
-      orderedmap: 2.1.1
-    dev: false
-
   /prosemirror-model/1.25.3:
     resolution: {integrity: sha512-dY2HdaNXlARknJbrManZ1WyUtos+AP97AmvqdOQtWtrrC5g4mohVX5DTi9rXNFSk09eczLq9GuNTtq3EfMeMGA==}
     dependencies:
@@ -11998,9 +11999,9 @@ packages:
   /prosemirror-state/1.4.3:
     resolution: {integrity: sha512-goFKORVbvPuAQaXhpbemJFRKJ2aixr+AZMGiquiqKxaucC6hlpHNZHWgz5R7dS4roHiwq9vDctE//CZ++o0W1Q==}
     dependencies:
-      prosemirror-model: 1.18.3
+      prosemirror-model: 1.25.3
       prosemirror-transform: 1.10.4
-      prosemirror-view: 1.29.2
+      prosemirror-view: 1.41.3
     dev: false
 
   /prosemirror-tables/1.8.1:
@@ -12031,14 +12032,6 @@ packages:
     resolution: {integrity: sha512-pwDy22nAnGqNR1feOQKHxoFkkUtepoFAd3r2hbEDsnf4wp57kKA36hXsB3njA9FtONBEwSDnDeCiJe+ItD+ykw==}
     dependencies:
       prosemirror-model: 1.25.3
-    dev: false
-
-  /prosemirror-view/1.29.2:
-    resolution: {integrity: sha512-T4Wm+eTpTH0N9gBJfJR6iecjRX2hYTKewoJUwa92hQOoEz2bYVZy6sYeN+hfnRR506TRvRcuZYqftp4KA8dN+Q==}
-    dependencies:
-      prosemirror-model: 1.18.3
-      prosemirror-state: 1.4.3
-      prosemirror-transform: 1.10.4
     dev: false
 
   /prosemirror-view/1.41.3:
@@ -14889,19 +14882,20 @@ packages:
     resolution: {integrity: sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==}
     engines: {node: '>=0.4'}
 
-  /y-prosemirror/1.0.20_7lcw2szygsvehgm3zxzfqeybia:
-    resolution: {integrity: sha512-LVMtu3qWo0emeYiP+0jgNcvZkqhzE/otOoro+87q0iVKxy/sMKuiJZnokfJdR4cn9qKx0Un5fIxXqbAlR2bFkA==}
+  /y-prosemirror/1.3.7_4cugzdeuy3ab4kstqr3tkklk3u:
+    resolution: {integrity: sha512-NpM99WSdD4Fx4if5xOMDpPtU3oAmTSjlzh5U4353ABbRHl1HtAFUx6HlebLZfyFxXN9jzKMDkVbcRjqOZVkYQg==}
+    engines: {node: '>=16.0.0', npm: '>=8.0.0'}
     peerDependencies:
       prosemirror-model: ^1.7.1
       prosemirror-state: ^1.2.3
       prosemirror-view: ^1.9.10
       y-protocols: ^1.0.1
-      yjs: ^13.3.2
+      yjs: ^13.5.38
     dependencies:
       lib0: 0.2.114
-      prosemirror-model: 1.18.3
+      prosemirror-model: 1.25.3
       prosemirror-state: 1.4.3
-      prosemirror-view: 1.29.2
+      prosemirror-view: 1.41.3
       y-protocols: 1.0.6_yjs@13.6.27
       yjs: 13.6.27
     dev: false

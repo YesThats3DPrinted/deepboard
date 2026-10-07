@@ -8,6 +8,10 @@ import {
   unlockGroupContentKeyring,
 } from 'src/code/crypto';
 import { groupContentKeyrings } from 'src/code/pages/computed/group-content-keyrings';
+import {
+  fixedKeyringBytes,
+  fixedSymmetricKeyring,
+} from 'src/code/areas/board/fixed-keys';
 import { asyncDialog } from 'src/code/utils/misc';
 import { zxcvbn } from 'src/code/utils/zxcvbn';
 
@@ -140,17 +144,12 @@ export async function createPage(input: {
     throw new Error('Invalid group content keyring.');
   }
 
-  const pageKeyring = createSymmetricKeyring();
+  // Every board in this build is locked with the same built-in key, so a new
+  // board must use that one. A fresh random key here would mean nobody could
+  // read the new board's name, not even the person who made it.
+  const pageKeyring = fixedSymmetricKeyring();
 
-  const pageEncryptedSymmetricKeyring = pageKeyring.wrapSymmetric(
-    groupContentKeyring,
-    {
-      associatedData: {
-        context: 'PageKeyring',
-        pageId,
-      },
-    },
-  ).wrappedValue;
+  const pageEncryptedSymmetricKeyring = fixedKeyringBytes();
   const pageEncryptedRelativeTitle = pageKeyring.encrypt(
     textToBytes(input.pageRelativeTitle),
     {

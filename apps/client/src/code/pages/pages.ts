@@ -105,57 +105,22 @@ export class Pages {
     });
   }
 
+  /**
+   * The few bits of "your settings" the canvas needs.
+   *
+   * The original app fetched these from a server and unlocked them with a key
+   * from your password. There is no server and no password, so the starting
+   * note and arrow are simply the ones a brand-new account used to be given.
+   * Without them, making the very first note fails.
+   */
   async loadUserData() {
-    if (!authStore().loggedIn) {
-      return;
-    }
+    this.defaultNote = {
+      root: { noteIdxs: [0] },
+      notes: [{ anchor: { y: 0 } }],
+    };
+    this.defaultArrow = { color: 'sky' };
 
-    const promises: PromiseLike<any>[] = [];
-
-    promises.push(
-      (async () => {
-        pagesStore().notifications =
-          await trpcClient.users.pages.notifications.load.query();
-      })(),
-    );
-
-    promises.push(
-      (async () => {
-        const [encryptedDefaultNote, encryptedDefaultArrow, isNewUser] =
-          await internals.realtime.hmget('user', authStore().userId, [
-            'encrypted-default-note',
-            'encrypted-default-arrow',
-            'new',
-          ]);
-
-        this.defaultNote = unpack(
-          internals.symmetricKeyring.decrypt(encryptedDefaultNote, {
-            padding: true,
-            associatedData: {
-              context: 'UserDefaultNote',
-              userId: authStore().userId,
-            },
-          }),
-        );
-        this.defaultArrow = unpack(
-          internals.symmetricKeyring.decrypt(encryptedDefaultArrow, {
-            padding: true,
-            associatedData: {
-              context: 'UserDefaultArrow',
-              userId: authStore().userId,
-            },
-          }),
-        );
-
-        this.react.isNewUser = !!isNewUser;
-
-        if (isNewUser) {
-          internals.realtime.hset('user', authStore().userId, 'new', false);
-        }
-      })(),
-    );
-
-    await Promise.all(promises);
+    this.react.isNewUser = false;
   }
 
   async setupPage(pageId: string) {

@@ -1,11 +1,21 @@
-import { isIncluded } from '@stdlib/misc';
 import type { AuthStore } from 'src/stores/auth';
 import type { RouteLocationNormalized, Router } from 'vue-router';
 
-import { trpcClient } from './trpc';
-import { getRequestConfig } from './utils/misc';
+import { HOME_PAGE_ID } from './areas/board/local-data';
 
 const moduleLogger = mainLogger.sub('routing.universal.ts');
+
+/**
+ * There is one screen: a board.
+ *
+ * The original app had a home page, a sign-up page, a log-in page, pricing, a
+ * list of your pages and a page per group. All of those belonged to accounts
+ * and to selling the thing. Here, anything that is not a board sends you
+ * straight to the home board, so opening the app puts you on a canvas.
+ *
+ * A board address looks like `/pages/<board id>`. Share that and the other
+ * person lands on the same board.
+ */
 
 export async function redirectIfNecessary(input: {
   router: Router;
@@ -34,56 +44,9 @@ export async function getRedirectDest(input: {
   auth: AuthStore;
   cookies?: typeof Cookies;
 }) {
-  // Page requires auth
-
-  if (
-    !input.auth.loggedIn &&
-    input.route.matched.some((record) => record.meta.requiresAuth)
-  ) {
-    return { name: 'login', query: { redirect: input.route.fullPath } };
+  if (input.route.name === 'page') {
+    return;
   }
 
-  // Page requires guest
-
-  if (
-    input.auth.loggedIn &&
-    input.route.matched.some((record) => record.meta.requiresGuest)
-  ) {
-    return {
-      name: isIncluded(process.env.MODE, ['ssr', 'spa']) ? 'home' : 'pages',
-    };
-  }
-
-  // Starting page redirection
-
-  if (input.auth.loggedIn && input.route.name === 'pages') {
-    try {
-      const startingPageId =
-        await trpcClient.users.pages.getStartingPageId.query(undefined, {
-          context: getRequestConfig(input.cookies),
-        });
-
-      return { name: 'page', params: { pageId: startingPageId } };
-    } catch (error) {
-      moduleLogger.error('getRedirectDest error: %o', error);
-
-      return { name: 'home' };
-    }
-  }
-
-  // Group main page redirection
-
-  if (input.route.name === 'group') {
-    await trpcClient.groups.getMainPageId.query({
-      groupId: input.route.params.groupId as string,
-    });
-
-    const mainPageId = await trpcClient.groups.getMainPageId.query({
-      groupId: input.route.params.groupId as string,
-    });
-
-    if (mainPageId != null) {
-      return { name: 'page', params: { pageId: mainPageId } };
-    }
-  }
+  return { name: 'page', params: { pageId: HOME_PAGE_ID } };
 }

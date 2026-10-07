@@ -14,6 +14,12 @@ import { once, throttle } from 'lodash';
 import { pack, unpack } from 'msgpackr';
 
 import { getNotificationInfo } from '../../pages/notifications/notifications';
+import {
+  boardDataGet,
+  boardDataSet,
+  splitFullKey,
+  whenSharedChanges,
+} from '../board/local-data';
 import { RealtimeContext } from './context';
 
 export interface RealtimeCommand {
@@ -51,36 +57,59 @@ export const RealtimeClient = once(
         super(process.env.REALTIME_SERVER_URL);
       }
 
+      /**
+       * There is no live server to connect to in this build. The facts the app
+       * asks for come from `board/local-data.ts` instead: some settled, some
+       * saved in this browser, some shared through the board server.
+       *
+       * Everything below this line is the original code, untouched. Only the
+       * way answers arrive has changed, which is why the loading states, the
+       * waiting, and the screen refreshing all still behave as they did.
+       */
       connect() {
-        super.connect();
-
-        this.socket?.addEventListener('open', () => {
-          if (this._isFirstConnection) {
-            this._logger.info('First connection');
-            this._isFirstConnection = false;
+        whenSharedChanges((fullKey) => {
+          if (!(fullKey in this.subscriptions)) {
             return;
           }
 
-          this._logger.info('Reconnecting');
+          const [prefix, suffix, field] = splitFullKey(fullKey);
 
-          for (const fullKey of Object.keys(this.subscriptions)) {
-            const [key, field] = splitStr(fullKey, '>', 2);
-            const [prefix, suffix] = splitStr(key, ':', 2);
-
-            this.commandBuffer.push({
-              type: RealtimeCommandType.SUBSCRIBE,
-              args: [prefix, suffix, field],
-            });
-          }
-
-          if (this.commandBuffer.length > 0) {
-            setTimeout(this.flushCommandBuffer);
-          }
+          this._deliverLocally(prefix, suffix, field);
         });
+      }
 
-        this.socket?.addEventListener('message', (event) => {
-          this._handleMessage(new Uint8Array(event.data));
-        });
+      /**
+       * Hand a fact to everybody waiting on it.
+       *
+       * This does the same four jobs the old server response did, and they all
+       * matter: put the value where the screen reads it from, mark it as just
+       * changed, let anybody awaiting it carry on, and clear it from every
+       * waiting list. Miss the last one and the app sits on a loading spinner
+       * for ever with nothing in the console to explain why.
+       */
+      private _deliverLocally(prefix: string, suffix: string, field: string) {
+        const fullKey = getFullKey(prefix, suffix, field);
+
+        if (!(fullKey in this.subscriptions)) {
+          return;
+        }
+
+        const value = boardDataGet(prefix, suffix, field);
+
+        this.values[fullKey] = value;
+
+        this.changed.add(fullKey);
+        setTimeout(() => this.changed.delete(fullKey));
+
+        this.pending.get(fullKey)?.resolve(value);
+        this.pending.delete(fullKey);
+
+        for (const ctx of this.subscriptions[fullKey] ?? []) {
+          ctx.changed.add(fullKey);
+          setTimeout(() => ctx.changed.delete(fullKey));
+
+          ctx.pending.delete(fullKey);
+        }
       }
 
       // Get commands
@@ -269,32 +298,56 @@ export const RealtimeClient = once(
         }
       }
 
+      /**
+       * Answer every waiting request from the local facts.
+       *
+       * The ids have to be counted out exactly as the old server did, because
+       * `hget` waits on an id, not on a key name. Get the counting wrong and
+       * every request that is not already on screen waits for ever.
+       */
       flushCommandBuffer = () => {
         if (this.commandBuffer.length === 0) {
           return;
         }
 
-        this._logger
-          .sub('flushCommandBuffer')
-          .info('Flushing commands... %o', JSON.stringify(this.commandBuffer));
+        const commands = this.commandBuffer.splice(0);
+        const firstCommandId = this._nextCommandId;
 
-        const encoder = new encoding.Encoder();
+        this._nextCommandId += commands.length;
 
-        encoding.writeVarUint(encoder, RealtimeClientMessageType.REQUEST);
+        for (let i = 0; i < commands.length; i++) {
+          const command = commands[i];
+          const [prefix, suffix, field, value] = command.args as [
+            string,
+            string,
+            string,
+            unknown,
+          ];
 
-        encoding.writeVarUint(encoder, this._nextCommandId);
+          switch (command.type) {
+            case RealtimeCommandType.HGET: {
+              const resolvable = this._responsePromises.get(firstCommandId + i);
 
-        encoding.writeVarUint(encoder, this.commandBuffer.length);
+              resolvable?.resolve(boardDataGet(prefix, suffix, field));
 
-        for (const command of this.commandBuffer) {
-          encoding.writeVarUint(encoder, command.type);
-          encoding.writeVarUint8Array(encoder, pack(command.args));
+              this._responsePromises.delete(firstCommandId + i);
+              break;
+            }
+
+            case RealtimeCommandType.HSET:
+              boardDataSet(prefix, suffix, field, value);
+
+              this._deliverLocally(prefix, suffix, field);
+              break;
+
+            case RealtimeCommandType.SUBSCRIBE:
+              this._deliverLocally(prefix, suffix, field);
+              break;
+
+            case RealtimeCommandType.UNSUBSCRIBE:
+              break;
+          }
         }
-
-        this._nextCommandId += this.commandBuffer.length;
-        this.commandBuffer.length = 0;
-
-        this.send(encoding.toUint8Array(encoder));
       };
 
       // Handle messages

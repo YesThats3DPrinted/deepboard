@@ -68,6 +68,15 @@ export class PageCamera {
 
     this.react.zoom = Math.min(this.react.zoom, 1);
 
+    // Fitting the board to the window divides by how far the notes are from
+    // the middle. On a board that has just opened, the notes have not been
+    // measured yet, so that distance can be zero and the zoom comes out as
+    // zero or not a number. The board then draws nothing at all, with no
+    // error anywhere. Fall back to normal size.
+    if (!Number.isFinite(this.react.zoom) || this.react.zoom <= 0) {
+      this.resetZoom();
+    }
+
     this.page.fixDisplay();
   }
 }
