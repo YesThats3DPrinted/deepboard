@@ -8,7 +8,7 @@
   // Where the app is allowed to be served from. Anything else is refused, so
   // another website cannot borrow this server. Comma separated, no spaces.
   "vars": {
-    "ALLOWED_ORIGINS": "http://localhost:60379"
+    "ALLOWED_ORIGINS": "https://deepboard.pages.dev,http://localhost:60379"
   },
 
   // Caps password attempts per address. One shared password that anybody can
