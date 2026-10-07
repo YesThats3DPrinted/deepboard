@@ -42,6 +42,15 @@ the same board. The board everybody starts on is `board0000000000000001`.
 Any other address sends you to that starting board, so there is no way to land
 on a screen that is not a canvas.
 
+To start a separate board, put a made-up name in the address, for example
+`/#/pages/roadmap-2027`. Nothing has to be created first: a board that nobody
+has opened before simply opens empty. Names can use letters, numbers, dashes
+and underscores.
+
+To make a board that lives *inside* a note, select the note and press **Create
+new page** in the panel on the right. The note then opens into it, and the way
+back is the trail along the top.
+
 ## Who can get in
 
 Two things keep other people out, and nothing else:

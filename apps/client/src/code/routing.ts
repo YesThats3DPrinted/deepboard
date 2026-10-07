@@ -39,12 +39,25 @@ export async function redirectIfNecessary(input: {
   }
 }
 
+/**
+ * What a board id is allowed to look like.
+ *
+ * The board server refuses anything else, and a refused connection looks
+ * exactly like a wrong password to the browser, so an address with a stray
+ * character in it would ask for the password over and over instead of saying
+ * what was wrong. Catching it here sends you to the home board instead.
+ */
+const BOARD_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
 export async function getRedirectDest(input: {
   route: RouteLocationNormalized;
   auth: AuthStore;
   cookies?: typeof Cookies;
 }) {
-  if (input.route.name === 'page') {
+  if (
+    input.route.name === 'page' &&
+    BOARD_ID.test(String(input.route.params.pageId ?? ''))
+  ) {
     return;
   }
 

@@ -140,10 +140,27 @@ export async function getBoardPass(): Promise<string | undefined> {
 }
 
 /**
- * Called when the board server refuses a pass. Throws the old one away and
- * asks again, so a pass that has run out fixes itself.
+ * Called when a board connection is refused.
+ *
+ * A refused connection and an unreachable server look identical to a browser:
+ * both are just a socket that closed. So check the server is answering first.
+ * If it is not, keep the pass and let the caller keep retrying — otherwise a
+ * server that is simply down would ask for the password again and again, and
+ * even the right password would not help.
  */
 export async function renewBoardPass(): Promise<string | undefined> {
+  try {
+    const health = await fetch(`${boardServerUrl()}/health`);
+
+    if (!health.ok) {
+      return storedPass();
+    }
+  } catch {
+    moduleLogger.info('Board server is not answering; keeping the pass');
+
+    return storedPass();
+  }
+
   forgetBoardPass();
 
   return await getBoardPass();
