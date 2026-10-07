@@ -7,6 +7,18 @@ export { BoardRoom } from './board-room';
 // refused, so a stray address cannot quietly create junk rooms.
 const ROOM_NAME = /^(page|index):[A-Za-z0-9_-]{1,64}$/;
 
+/**
+ * What passes are signed with.
+ *
+ * The shared password is mixed in, so changing the password makes every pass
+ * already handed out stop working at once. Without that, somebody who got hold
+ * of a pass would keep their way in for half a day after the password was
+ * changed because of them.
+ */
+function signingSecret(env: Env): string {
+  return `${env.PASS_SECRET}|${env.BOARD_PASSWORD}`;
+}
+
 function allowedOrigins(env: Env): string[] {
   return (env.ALLOWED_ORIGINS ?? '')
     .split(',')
@@ -59,7 +71,14 @@ async function handleAuth(request: Request, env: Env): Promise<Response> {
     return json({ error: 'Not allowed.' }, 403);
   }
 
-  if (env.BOARD_PASSWORD == null || env.BOARD_PASSWORD === '') {
+  if (
+    env.BOARD_PASSWORD == null ||
+    env.BOARD_PASSWORD === '' ||
+    env.PASS_SECRET == null ||
+    env.PASS_SECRET === ''
+  ) {
+    // A 500, never a 401. Telling somebody their password is wrong when the
+    // server was never set up traps them typing a correct password for ever.
     return json({ error: 'Server is not set up.' }, 500, cors);
   }
 
@@ -95,7 +114,7 @@ async function handleAuth(request: Request, env: Env): Promise<Response> {
   }
 
   return json(
-    { pass: await issuePass(env.PASS_SECRET, Date.now()) },
+    { pass: await issuePass(signingSecret(env), Date.now()) },
     200,
     cors,
   );
@@ -119,12 +138,10 @@ async function handleRoom(
   }
 
   // A browser cannot set a header on a web socket, so the pass travels as the
-  // sub-protocol. Close with 1008 rather than refusing the upgrade, so the app
-  // can tell "wrong pass" apart from "server down" and ask for the password
-  // again.
+  // sub-protocol.
   const pass = request.headers.get('Sec-WebSocket-Protocol') ?? '';
 
-  if (!(await passIsValid(env.PASS_SECRET, pass, Date.now()))) {
+  if (!(await passIsValid(signingSecret(env), pass, Date.now()))) {
     return new Response('Wrong pass.', { status: 401 });
   }
 

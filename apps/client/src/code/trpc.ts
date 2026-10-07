@@ -155,6 +155,19 @@ const handlers: Record<string, Handler> = {
     return undefined;
   },
 
+  // Boards cannot be deleted in this build. Saying so out loud beats the old
+  // behaviour, which closed the dialog as if it had worked and left the board
+  // exactly where it was.
+  'pages.deletion.delete': () => {
+    throw new Error('Boards cannot be deleted in this build.');
+  },
+  'pages.deletion.restore': () => {
+    throw new Error('Boards cannot be deleted in this build.');
+  },
+  'pages.deletion.deletePermanently': () => {
+    throw new Error('Boards cannot be deleted in this build.');
+  },
+
   // There is no page history in this build.
   'pages.snapshots.load': () => ({ encryptedSymmetricKey: null, data: null }),
   'pages.snapshots.save': () => undefined,
@@ -256,9 +269,15 @@ function call(path: string, input: unknown): Promise<unknown> {
  */
 function makeCaller(path: string[]): any {
   return new Proxy(() => undefined, {
-    get(_target, property: string) {
+    get(_target, property: string | symbol) {
       if (property === 'query' || property === 'mutate') {
         return (input: unknown) => call(path.join('.'), input);
+      }
+
+      // Without this, awaiting a half-written call by mistake makes JavaScript
+      // treat the proxy as a promise and wait for ever instead of failing.
+      if (typeof property === 'symbol' || property === 'then') {
+        return undefined;
       }
 
       return makeCaller([...path, property]);

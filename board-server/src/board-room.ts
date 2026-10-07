@@ -64,12 +64,36 @@ export class BoardRoom extends DurableObject<Env> {
         )
       `);
 
+      // One row per person, not one per cursor movement. Keyed on the blob
+      // instead, every twitch of a mouse would be a new row that nothing ever
+      // replaces, and a new joiner would be sent hundreds of stale cursors.
       this.ctx.storage.sql.exec(`
         CREATE TABLE IF NOT EXISTS awareness (
-          data BLOB PRIMARY KEY,
+          client_id INTEGER PRIMARY KEY,
+          data BLOB NOT NULL,
           expires_at INTEGER NOT NULL
         )
       `);
+
+      // A board made by the earlier version has the old shape. Spotting the
+      // missing column is the only way to tell, and rebuilding it costs
+      // nothing.
+      const hasClientId = this.ctx.storage.sql
+        .exec<{ name: string }>('PRAGMA table_info(awareness)')
+        .toArray()
+        .some((column) => column.name === 'client_id');
+
+      if (!hasClientId) {
+        this.ctx.storage.sql.exec('DROP TABLE awareness');
+
+        this.ctx.storage.sql.exec(`
+          CREATE TABLE awareness (
+            client_id INTEGER PRIMARY KEY,
+            data BLOB NOT NULL,
+            expires_at INTEGER NOT NULL
+          )
+        `);
+      }
     });
   }
 
@@ -93,7 +117,11 @@ export class BoardRoom extends DurableObject<Env> {
     const claimedAt = this._claim();
 
     if (claimedAt !== null) {
-      const deadline = claimedAt + NEW_BOARD_SETTLE_MS;
+      // Never further ahead than the wait is long, even if the written-down
+      // moment somehow sits in the future. Otherwise the wait never ends and
+      // the connection never opens.
+      const deadline =
+        Math.min(claimedAt, Date.now()) + NEW_BOARD_SETTLE_MS;
 
       while (this._updateCount() === 0 && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -161,6 +189,11 @@ export class BoardRoom extends DurableObject<Env> {
     code: number,
     reason: string,
   ): Promise<void> {
+    this.ctx.storage.sql.exec(
+      'DELETE FROM awareness WHERE expires_at <= ?',
+      Date.now(),
+    );
+
     // 1006 may never be sent back; it only ever means "the connection
     // dropped". Anything outside 1000-4999 would throw.
     ws.close(code >= 1000 && code < 5000 && code !== 1006 ? code : 1000, reason);
@@ -326,7 +359,10 @@ export class BoardRoom extends DurableObject<Env> {
     let budget = MAX_MESSAGE_BYTES;
 
     for (const update of updates) {
-      if (firstBatch.length === 0 || update.length <= budget) {
+      // Never forced in. A change too big for the budget goes on its own,
+      // because the browser will not touch the board at all until this first
+      // message arrives, and an oversized one may never arrive.
+      if (update.length <= budget) {
         firstBatch.push(update);
         budget -= update.length;
       } else {
@@ -386,7 +422,21 @@ export class BoardRoom extends DurableObject<Env> {
    * can slip in while the list is half replaced.
    */
   private _compactIfNeeded(): void {
-    if (this._updateCount() <= COMPACT_AFTER_UPDATES) {
+    const count = this._updateCount();
+
+    if (count <= COMPACT_AFTER_UPDATES) {
+      return;
+    }
+
+    // Squashing can fail, and when it does it will keep failing. Without this,
+    // every later keystroke would read the whole board back out and try again.
+    const gaveUpAt = this.ctx.storage.sql
+      .exec<{ value: number }>(
+        "SELECT value FROM meta WHERE name = 'squash_gave_up_at'",
+      )
+      .toArray()[0]?.value;
+
+    if (gaveUpAt != null && count < gaveUpAt * 2) {
       return;
     }
 
@@ -400,17 +450,33 @@ export class BoardRoom extends DurableObject<Env> {
       // A change we cannot merge would otherwise break every save from now on.
       // Leaving the list alone is harmless: it still works, it is just bigger.
       console.error('Could not squash board', String(error));
+
+      this._rememberSquashFailed(count);
+
       return;
     }
 
     // A single change this big could not be sent to a browser in one piece, and
     // unlike a list it cannot be broken up. Keep the list instead.
     if (merged.length > MAX_MERGED_BYTES) {
+      this._rememberSquashFailed(count);
+
       return;
     }
 
     this.ctx.storage.sql.exec('DELETE FROM updates WHERE idx <= ?', highestIdx);
     this._storeUpdate(merged);
+
+    this.ctx.storage.sql.exec(
+      "DELETE FROM meta WHERE name = 'squash_gave_up_at'",
+    );
+  }
+
+  private _rememberSquashFailed(count: number): void {
+    this.ctx.storage.sql.exec(
+      "INSERT OR REPLACE INTO meta (name, value) VALUES ('squash_gave_up_at', ?)",
+      count,
+    );
   }
 
   // Presence: where other people's cursors are
@@ -431,8 +497,15 @@ export class BoardRoom extends DurableObject<Env> {
         continue;
       }
 
+      const clientId = readAwarenessClientId(update);
+
+      if (clientId === null) {
+        continue;
+      }
+
       this.ctx.storage.sql.exec(
-        'INSERT OR REPLACE INTO awareness (data, expires_at) VALUES (?, ?)',
+        'INSERT OR REPLACE INTO awareness (client_id, data, expires_at) VALUES (?, ?, ?)',
+        clientId,
         update,
         now + AWARENESS_LIFETIME_MS,
       );
@@ -450,7 +523,7 @@ export class BoardRoom extends DurableObject<Env> {
   private _buildAwarenessSyncMessage(): Uint8Array {
     const rows = this.ctx.storage.sql
       .exec<{ data: ArrayBuffer }>(
-        'SELECT data FROM awareness WHERE expires_at > ? ORDER BY expires_at',
+        'SELECT data FROM awareness WHERE expires_at > ? ORDER BY expires_at DESC LIMIT 200',
         Date.now(),
       )
       .toArray();
@@ -472,9 +545,15 @@ export class BoardRoom extends DurableObject<Env> {
   private _send(ws: WebSocket, message: Uint8Array): void {
     try {
       ws.send(message);
-    } catch {
-      // The other end went away mid-send. Nothing to do: its close handler
-      // will run, and presence messages time out on their own.
+    } catch (error) {
+      // Usually the other end went away mid-send, which needs no action: its
+      // close handler runs and presence times out on its own. Logged anyway,
+      // because the other cause is a message too big to send, and that one
+      // leaves somebody staring at a board that never finishes loading.
+      console.error('Could not send', {
+        bytes: message.length,
+        error: String(error),
+      });
     }
   }
 
@@ -484,6 +563,27 @@ export class BoardRoom extends DurableObject<Env> {
         this._send(ws, message);
       }
     }
+  }
+}
+
+/**
+ * Which person a presence message is about.
+ *
+ * The format is: how many people, then for each one their number, a counter,
+ * and their state. Only the first number is needed, and these messages always
+ * carry exactly one person.
+ */
+function readAwarenessClientId(update: Uint8Array): number | null {
+  try {
+    const decoder = decoding.createDecoder(update);
+
+    if (decoding.readVarUint(decoder) !== 1) {
+      return null;
+    }
+
+    return decoding.readVarUint(decoder);
+  } catch {
+    return null;
   }
 }
 

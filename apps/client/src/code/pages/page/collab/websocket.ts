@@ -67,6 +67,7 @@ export const PageWebsocket = once(
       private _retryDelay = FIRST_RETRY_DELAY_MS;
       private _openedThisAttempt = false;
       private _failedHandshakes = 0;
+      private _passInUse?: string;
 
       private readonly _updateBuffer: Uint8Array[] = [];
 
@@ -124,6 +125,8 @@ export const PageWebsocket = once(
         }
 
         this._openedThisAttempt = false;
+
+        this._passInUse = pass;
 
         const socket = new WebSocket(this._url, [pass]);
 
@@ -197,7 +200,7 @@ export const PageWebsocket = once(
             if (this._failedHandshakes >= FAILURES_BEFORE_ASKING_AGAIN) {
               this._failedHandshakes = 0;
 
-              void renewBoardPass().then(() => {
+              void renewBoardPass(this._passInUse).then(() => {
                 if (this._keepConnected) {
                   void this._openSocket();
                 }
@@ -519,6 +522,12 @@ export const PageWebsocket = once(
       disconnect() {
         this._logger.info('Disconnecting');
 
+        // Changes wait up to a fifth of a second to be bundled. Leaving a board
+        // — by walking to another one, or by this board being dropped from the
+        // handful kept open — must not throw those away, and nothing here is
+        // written down anywhere else.
+        this._sendDocSingleUpdateMessageThrottled.flush();
+
         this._keepConnected = false;
 
         if (typeof window !== 'undefined') {
@@ -530,7 +539,12 @@ export const PageWebsocket = once(
         this.connectPromise = undefined;
         this.syncPromise = undefined;
 
-        if (this.socket?.readyState === WebSocket.OPEN) {
+        // CONNECTING counts. A connection abandoned half-open is never closed
+        // by anybody, and holds a slot on the board server until the tab dies.
+        if (
+          this.socket?.readyState === WebSocket.OPEN ||
+          this.socket?.readyState === WebSocket.CONNECTING
+        ) {
           this.socket.close();
         }
 
@@ -538,6 +552,9 @@ export const PageWebsocket = once(
       }
 
       destroy() {
+        // Before the listener goes, so a change made a moment ago still leaves.
+        this._sendDocSingleUpdateMessageThrottled.flush();
+
         this.doc.off('updateV2', this._handleDocUpdate);
 
         this.disconnect();

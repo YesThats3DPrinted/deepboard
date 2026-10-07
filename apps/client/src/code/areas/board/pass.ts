@@ -59,6 +59,13 @@ async function swapPasswordForPass(password: string): Promise<string | null> {
     throw new Error('Too many tries. Wait a minute and try again.');
   }
 
+  // Only a 401 means the password was wrong. Anything else is the server
+  // having a problem, and saying "wrong password" then traps somebody in this
+  // box typing a password that is perfectly correct.
+  if (response.status >= 500) {
+    throw new Error('The board server is having trouble. Try again shortly.');
+  }
+
   if (!response.ok) {
     return null;
   }
@@ -148,7 +155,9 @@ export async function getBoardPass(): Promise<string | undefined> {
  * server that is simply down would ask for the password again and again, and
  * even the right password would not help.
  */
-export async function renewBoardPass(): Promise<string | undefined> {
+export async function renewBoardPass(
+  refusedPass?: string,
+): Promise<string | undefined> {
   try {
     const health = await fetch(`${boardServerUrl()}/health`);
 
@@ -158,6 +167,13 @@ export async function renewBoardPass(): Promise<string | undefined> {
   } catch {
     moduleLogger.info('Board server is not answering; keeping the pass');
 
+    return storedPass();
+  }
+
+  // Several boards are open at once and all of them notice a refusal within a
+  // moment of each other. Without this, the second one throws away the good
+  // pass the first one just fetched and asks for the password all over again.
+  if (refusedPass != null && storedPass() !== refusedPass) {
     return storedPass();
   }
 

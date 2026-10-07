@@ -110,7 +110,13 @@ export const RealtimeContext = once(
         this.subscriptions.add(fullKey);
 
         if (!internals.realtime.isSynced(prefix as any, suffix, field)) {
-          internals.realtime.pending.set(fullKey, new Resolvable());
+          // Only if nobody is waiting on this one already. Replacing it would
+          // leave the first waiter's promise with nothing left to resolve it,
+          // and that shows up as a screen stuck loading with a clean console.
+          if (!internals.realtime.pending.has(fullKey)) {
+            internals.realtime.pending.set(fullKey, new Resolvable());
+          }
+
           this.pending.add(fullKey);
         }
 

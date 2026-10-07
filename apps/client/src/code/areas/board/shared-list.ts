@@ -43,15 +43,28 @@ export function startSharedList(): void {
   const doc = new Y.Doc();
   const data = doc.getMap<unknown>('data');
 
+  // Listening from the moment the document exists, not from the moment the
+  // connection is ready. A name changed in between still has to reach the
+  // server, and `sendUpdate` queues it until there is somewhere to send it.
+  doc.on('updateV2', (update: Uint8Array, origin: unknown) => {
+    if (origin !== 'server') {
+      sendUpdate(update);
+    }
+  });
+
   let socket: WebSocket | undefined;
   let keepConnected = true;
   let retryDelay = FIRST_RETRY_DELAY_MS;
   let openedThisAttempt = false;
   let failedHandshakes = 0;
+  let passInUse: string | undefined;
   let updateId = 0;
-  let listening = false;
 
+  /** Changes made before the connection was ready, or while it was down. */
   const unsent: Uint8Array[] = [];
+
+  /** Changes sent but not yet confirmed, in case the connection drops. */
+  const unconfirmed = new Map<number, Uint8Array>();
 
   function sendUpdate(update: Uint8Array) {
     if (socket?.readyState !== WebSocket.OPEN) {
@@ -63,10 +76,26 @@ export function startSharedList(): void {
 
     encoding.writeVarUint(encoder, DOC);
     encoding.writeVarUint(encoder, CLIENT_SINGLE_UPDATE);
-    encoding.writeVarUint(encoder, updateId++);
+    encoding.writeVarUint(encoder, updateId);
     encoding.writeVarUint8Array(encoder, update);
 
+    unconfirmed.set(updateId, update);
+    updateId++;
+
     socket.send(encoding.toUint8Array(encoder));
+  }
+
+  function sendEverythingWaiting() {
+    // Anything the server never confirmed goes back in the queue first, so a
+    // name changed just as the connection dropped is not quietly lost.
+    if (unconfirmed.size > 0) {
+      unsent.unshift(...unconfirmed.values());
+      unconfirmed.clear();
+    }
+
+    for (const update of unsent.splice(0)) {
+      sendUpdate(update);
+    }
   }
 
   function handleMessage(bytes: Uint8Array) {
@@ -92,20 +121,7 @@ export function startSharedList(): void {
           }
         });
 
-        if (!listening) {
-          listening = true;
-
-          doc.on('updateV2', (update: Uint8Array, origin: unknown) => {
-            if (origin !== 'server') {
-              sendUpdate(update);
-            }
-          });
-        }
-
-        // Anything written before the connection was ready goes now.
-        for (const update of unsent.splice(0)) {
-          sendUpdate(update);
-        }
+        sendEverythingWaiting();
 
         break;
       }
@@ -119,6 +135,7 @@ export function startSharedList(): void {
         break;
 
       case SERVER_SINGLE_UPDATE_ACK:
+        unconfirmed.delete(decoding.readVarUint(decoder));
         break;
 
       default:
@@ -134,6 +151,7 @@ export function startSharedList(): void {
     }
 
     openedThisAttempt = false;
+    passInUse = pass;
 
     const opening = new WebSocket(
       `${process.env.COLLAB_SERVER_URL}/${ROOM}`,
@@ -150,6 +168,8 @@ export function startSharedList(): void {
       retryDelay = FIRST_RETRY_DELAY_MS;
 
       moduleLogger.info('Shared list connected');
+
+      sendEverythingWaiting();
     });
 
     opening.addEventListener('message', (event) => {
@@ -175,7 +195,7 @@ export function startSharedList(): void {
         if (failedHandshakes >= FAILURES_BEFORE_ASKING_AGAIN) {
           failedHandshakes = 0;
 
-          void renewBoardPass().then(() => {
+          void renewBoardPass(passInUse).then(() => {
             if (keepConnected) {
               void open();
             }

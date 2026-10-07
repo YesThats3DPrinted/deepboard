@@ -395,6 +395,66 @@ check(
 raceA.close();
 raceB.close();
 
+// --- Squashing a long list of changes
+
+console.log('\nSquashing a busy board');
+const busyRoom = `page:busy${Math.floor(Date.now() / 1000)}`;
+const busy = await connect(busyRoom, pass);
+await busy.waitFor(2);
+
+const BUSY_CHANGES = 110;
+
+for (let i = 0; i < BUSY_CHANGES; i++) {
+  busy.send(singleUpdateMessage(i, makeUpdate(`key${i}`, `value${i}`)));
+}
+
+// Wait for the last one to be confirmed before looking.
+await busy.waitFor(2 + BUSY_CHANGES, 30000);
+busy.close();
+
+await new Promise((r) => setTimeout(r, 2000));
+
+const afterSquash = await connect(busyRoom, pass);
+await afterSquash.waitFor(2);
+
+const squashed = readAllUpdates(afterSquash.messages[0]);
+const squashedExtra = afterSquash.messages
+  .slice(1)
+  .filter((m) => m[0] === DOC && m[1] === SERVER_SINGLE_UPDATE)
+  .map((m) => {
+    const d = decoding.createDecoder(m);
+    decoding.readVarUint(d);
+    decoding.readVarUint(d);
+    return decoding.readVarUint8Array(d);
+  });
+
+const squashedAll = [...(squashed?.updates ?? []), ...squashedExtra];
+
+check(
+  'the list really was squashed',
+  squashedAll.length < BUSY_CHANGES,
+  `${squashedAll.length} changes stored, started with ${BUSY_CHANGES}`,
+);
+
+let everyChangeSurvived = true;
+let missing = '';
+
+for (let i = 0; i < BUSY_CHANGES; i++) {
+  if (readKey(squashedAll, `key${i}`) !== `value${i}`) {
+    everyChangeSurvived = false;
+    missing = `key${i}`;
+    break;
+  }
+}
+
+check(
+  'squashing lost nothing',
+  everyChangeSurvived,
+  missing ? `${missing} is gone` : '',
+);
+
+afterSquash.close();
+
 // --- Guessing the password
 
 console.log('\nGuessing the password');

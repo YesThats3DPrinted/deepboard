@@ -27,7 +27,14 @@ const env = Object.assign(
       : dotenv.config({ path: '../../.env.prod' })),
   }).parsed,
   objFromEntries(
-    Object.entries(process.env ?? {}).filter(([key]) => /^\w+$/.test(key)),
+    // Everything in the build shell ends up inside the built app, where
+    // anybody can read it. Names that look like secrets are kept out, because
+    // building in a shell that happens to have one exported would publish it.
+    Object.entries(process.env ?? {}).filter(
+      ([key]) =>
+        /^\w+$/.test(key) &&
+        !/(PASSWORD|SECRET|TOKEN|_KEY|APIKEY|CREDENTIAL)/i.test(key),
+    ),
   ),
 );
 

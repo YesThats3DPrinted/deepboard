@@ -70,7 +70,10 @@ async function signingKey(secret: string): Promise<CryptoKey> {
  * PASS_LIFETIME_MS from now. The shape is `<expiry>.<signature>`, which is
  * safe to use as a web socket sub-protocol: no commas, spaces or slashes.
  */
-export async function issuePass(secret: string, now: number): Promise<string> {
+export async function issuePass(
+  secret: string,
+  now: number,
+): Promise<string> {
   const payload = String(now + PASS_LIFETIME_MS);
 
   const signature = await crypto.subtle.sign(
