@@ -116,7 +116,10 @@ strings, so a bad guess tells an attacker nothing about how close it was.
 
 ## The Worker
 
-New folder: `apps/board-server`
+Folder: `board-server`, at the top of the repo.
+
+It must sit outside `apps/`. Everything under `apps/` belongs to the pnpm workspace, and npm then
+refuses to install the Worker's own packages with `Unsupported URL Type "workspace:"`.
 
 - One Durable Object class, one instance per board room.
 - Accepts a web socket at `/room/:roomId`, with the password sent as the socket's sub-protocol so
@@ -128,14 +131,47 @@ New folder: `apps/board-server`
 
 ## Local versions
 
-This repo needs **Node 18** and **pnpm 7.6.0**. Newer Node breaks pnpm 7's downloads with
-`ERR_INVALID_THIS`. Before any command in this repo:
+The app needs **Node 18** and **pnpm 7.6.0**. Newer Node breaks pnpm 7's downloads with
+`ERR_INVALID_THIS`. Before any `pnpm` command in this repo:
 
 ```bash
 export PATH="$HOME/.local/node18/bin:$PATH"
 ```
 
 The same line is in `use-node18.sh` at the top of the repo.
+
+The Worker needs the opposite: Wrangler 4 needs **Node 20 or newer**, so run every `wrangler`
+command with the normal `node` on the path, not the Node 18 one. The Worker's packages are
+installed with `npm`, separately from the rest of the repo.
+
+### The Worker cannot be run on this machine
+
+Cloudflare's local runtime needs **macOS 13.5 or newer**. On macOS 12 `wrangler dev` stops with:
+
+```
+Unsupported macOS version: The Cloudflare Workers runtime cannot run on the current version of macOS
+```
+
+`wrangler deploy` is unaffected, because it only uploads. So the Worker is tested by **deploying it
+and talking to the real one**:
+
+```bash
+cd board-server
+npx wrangler deploy
+PW=$(grep BOARD_PASSWORD .dev.vars | cut -d'"' -f2)
+BOARD_URL=https://deepboard-server.yt3dp.workers.dev \
+BOARD_ORIGIN=http://localhost:60379 \
+BOARD_PASSWORD="$PW" \
+node test/board-room.test.mjs
+```
+
+`.dev.vars` holds the shared password and the signing secret. It is never committed. The same two
+values are set on the live Worker with `npx wrangler secret put BOARD_PASSWORD` and
+`npx wrangler secret put PASS_SECRET`.
+
+`ALLOWED_ORIGINS` in `wrangler.jsonc` lists the addresses the app is allowed to be served from.
+Every other address is refused, so another website cannot borrow the board server. It must include
+the local address while developing **and** the live web address once the app is published.
 
 ## Order of work
 

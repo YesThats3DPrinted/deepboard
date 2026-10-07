@@ -268,7 +268,7 @@ first.close();
 second.close();
 await new Promise((r) => setTimeout(r, 1500));
 
-const third = await connect(room, await getPass());
+const third = await connect(room, pass);
 await third.waitFor(2);
 const thirdAll = readAllUpdates(third.messages[0]);
 check('the board is still there', (thirdAll?.updates.length ?? 0) >= 1);
@@ -282,7 +282,7 @@ third.close();
 // --- An empty change is harmless
 
 console.log('\nOdd input');
-const fourth = await connect(room, await getPass());
+const fourth = await connect(room, pass);
 await fourth.waitFor(2);
 const beforeEmpty = fourth.messages.length;
 fourth.send(singleUpdateMessage(7, new Uint8Array(0)));
@@ -299,6 +299,119 @@ await new Promise((r) => setTimeout(r, 1000));
 check('a nonsense message does not drop the connection', fourth.socket.readyState === 1);
 check('a nonsense message gets no reply', fourth.messages.length === beforeJunk);
 fourth.close();
+
+// --- A change too big for one stored row
+
+console.log('\nA very big change');
+const bigRoom = `page:big${Math.floor(Date.now() / 1000)}`;
+const bigDoc = new Y.Doc();
+bigDoc.getMap('test').set('blob', 'x'.repeat(1_600_000));
+const bigUpdate = Y.encodeStateAsUpdateV2(bigDoc);
+check('the test change really is over one million bytes', bigUpdate.length > 1_000_000, `${bigUpdate.length} bytes`);
+
+const bigFirst = await connect(bigRoom, pass);
+await bigFirst.waitFor(2);
+bigFirst.send(singleUpdateMessage(0, bigUpdate));
+await bigFirst.waitFor(3);
+check('the big change is confirmed', bigFirst.messages[2]?.[1] === SERVER_ACK);
+bigFirst.close();
+
+await new Promise((r) => setTimeout(r, 1500));
+
+const bigSecond = await connect(bigRoom, pass);
+await bigSecond.waitFor(2);
+const bigRead = readAllUpdates(bigSecond.messages[0]);
+const bigLeftOver = bigSecond.messages
+  .slice(1)
+  .filter((m) => m[0] === DOC && m[1] === SERVER_SINGLE_UPDATE)
+  .map((m) => {
+    const d = decoding.createDecoder(m);
+    decoding.readVarUint(d);
+    decoding.readVarUint(d);
+    return decoding.readVarUint8Array(d);
+  });
+
+const bigAll = [...(bigRead?.updates ?? []), ...bigLeftOver];
+check(
+  'the big change comes back in one piece',
+  readKey(bigAll, 'blob')?.length === 1_600_000,
+  `got ${readKey(bigAll, 'blob')?.length}`,
+);
+
+// --- The board is byte-for-byte the same after a cold read
+
+const original = new Y.Doc();
+Y.applyUpdateV2(original, bigUpdate);
+const rebuilt = new Y.Doc();
+rebuilt.transact(() => {
+  for (const u of bigAll) {
+    Y.applyUpdateV2(rebuilt, u);
+  }
+});
+check(
+  'nothing is missing from the rebuilt board',
+  Buffer.from(Y.encodeStateVector(original)).equals(Buffer.from(Y.encodeStateVector(rebuilt))),
+);
+bigSecond.close();
+
+// --- Two people opening the same brand-new board at the same moment
+
+console.log('\nTwo people open a new board at once');
+const raceRoom = `page:race${Math.floor(Date.now() / 1000)}`;
+
+// Both start connecting at the same moment. Exactly one of them should be told
+// the board is empty; that one builds it and saves a starting point straight
+// away, which is what the real app does. The other must be made to wait and
+// then be given that starting point. If both were told the board was empty,
+// both would build a rival board and one person's first notes would vanish.
+const raceConnects = [connect(raceRoom, pass), connect(raceRoom, pass)];
+
+const builder = await Promise.race(raceConnects);
+await builder.waitFor(1);
+builder.send(singleUpdateMessage(0, makeUpdate('from', 'first')));
+
+const [raceA, raceB] = await Promise.all(raceConnects);
+const waiter = builder === raceA ? raceB : raceA;
+
+await waiter.waitFor(1, 8000);
+const waiterAll = readAllUpdates(waiter.messages[0]);
+
+check(
+  'the one that waited is told what is on the board first',
+  waiterAll !== null,
+  `first message started ${[...(waiter.messages[0] ?? []).slice(0, 3)].join(',')}`,
+);
+check(
+  'only one of them is told the board is empty',
+  (waiterAll?.updates.length ?? 0) >= 1,
+  `the one that waited was told ${waiterAll?.updates.length} stored changes`,
+);
+check(
+  'the one that waited gets what the first one saved',
+  readKey(waiterAll?.updates ?? [], 'from') === 'first',
+  `got ${readKey(waiterAll?.updates ?? [], 'from')}`,
+);
+
+raceA.close();
+raceB.close();
+
+// --- Guessing the password
+
+console.log('\nGuessing the password');
+let sawRateLimit = false;
+for (let i = 0; i < 45; i++) {
+  const response = await fetch(`${BASE}/auth`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: ORIGIN },
+    body: JSON.stringify({ password: `guess-${i}` }),
+  });
+
+  if (response.status === 429) {
+    sawRateLimit = true;
+    break;
+  }
+}
+check('guessing over and over gets blocked', sawRateLimit);
 
 console.log(`\n${failures === 0 ? 'All checks passed.' : `${failures} check(s) failed.`}`);
 process.exit(failures === 0 ? 0 : 1);

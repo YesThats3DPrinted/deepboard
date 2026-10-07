@@ -63,6 +63,14 @@ async function handleAuth(request: Request, env: Env): Promise<Response> {
     return json({ error: 'Server is not set up.' }, 500, cors);
   }
 
+  // Stop anybody sitting there guessing the password. This is the control that
+  // actually matters when there is one shared password.
+  const guessedFrom = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+
+  if (!(await env.AUTH_LIMITER.limit({ key: guessedFrom })).success) {
+    return json({ error: 'Too many tries. Wait a minute.' }, 429, cors);
+  }
+
   let password: unknown;
 
   try {

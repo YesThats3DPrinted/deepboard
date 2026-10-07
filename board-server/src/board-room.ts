@@ -7,9 +7,19 @@ import {
   AWARENESS_LIFETIME_MS,
   COMPACT_AFTER_UPDATES,
   ClientDocMessageType,
+  MAX_CHUNK_BYTES,
+  MAX_MERGED_BYTES,
+  MAX_MESSAGE_BYTES,
   MessageType,
+  NEW_BOARD_SETTLE_MS,
   ServerDocMessageType,
 } from './protocol';
+
+interface UpdateRow extends Record<string, SqlStorageValue> {
+  idx: number;
+  gid: number;
+  data: ArrayBuffer;
+}
 
 /**
  * One board.
@@ -21,16 +31,36 @@ import {
  * them. Yjs can merge a list of updates in any order into the same result, so
  * the list never needs sorting and two people editing at once cannot corrupt
  * it. Once the list gets long it is squashed into one update.
+ *
+ * Every change is written to storage inside the same handler that received it,
+ * before anybody else is told about it. Nothing is held in memory waiting to be
+ * saved, because memory is thrown away when a sleeping board is woken up
+ * somewhere else, and a change that other people can see must never be a
+ * change that can vanish.
  */
 export class BoardRoom extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
 
     ctx.blockConcurrencyWhile(async () => {
+      // One logical change can be too big for a single row, so it is split
+      // across rows that share a `gid` and are put back together in `idx`
+      // order.
       this.ctx.storage.sql.exec(`
         CREATE TABLE IF NOT EXISTS updates (
           idx INTEGER PRIMARY KEY AUTOINCREMENT,
+          gid INTEGER NOT NULL,
           data BLOB NOT NULL
+        )
+      `);
+
+      // Remembers the moment the first person ever opened this board, so a
+      // second person arriving at the same instant can be made to wait rather
+      // than start a rival empty board.
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS meta (
+          name TEXT PRIMARY KEY,
+          value INTEGER NOT NULL
         )
       `);
 
@@ -51,12 +81,37 @@ export class BoardRoom extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
+    // Two people opening the same brand-new board at the same moment would
+    // both be told it is empty, and both would then build their own empty
+    // board. Yjs keeps only one of those, so one person's first few notes
+    // would quietly disappear.
+    //
+    // So the first person ever to open a board claims it, and that claim is
+    // written down before anything is waited on. A board handles one thing at
+    // a time, so a second person arriving in the same instant always sees the
+    // claim, and waits for the first person's starting point instead.
+    const claimedAt = this._claim();
+
+    if (claimedAt !== null) {
+      const deadline = claimedAt + NEW_BOARD_SETTLE_MS;
+
+      while (this._updateCount() === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+
+    // Only joined up once the waiting is over. A socket that is joined up
+    // early would be sent other people's changes before it has been told what
+    // is on the board, and the browser expects that message first.
     this.ctx.acceptWebSocket(server);
 
-    // The browser will not start listening until it has been told the board's
-    // current contents, so send them straight away.
-    server.send(this._buildAllUpdatesMessage());
-    server.send(this._buildAwarenessSyncMessage());
+    // The browser does not start listening for changes until it has been told
+    // the board's contents, so send them straight away.
+    for (const message of this._buildContentsMessages()) {
+      this._send(server, message);
+    }
+
+    this._send(server, this._buildAwarenessSyncMessage());
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -70,17 +125,34 @@ export class BoardRoom extends DurableObject<Env> {
     }
 
     const bytes = new Uint8Array(message);
+
+    let messageType: number;
     const decoder = decoding.createDecoder(bytes);
 
-    switch (decoding.readVarUint(decoder)) {
-      case MessageType.DOC:
-        this._handleDocMessage(ws, decoder);
-        break;
-      case MessageType.AWARENESS:
-        this._handleAwarenessMessage(ws, decoder, bytes);
-        break;
-      default:
-        break;
+    try {
+      messageType = decoding.readVarUint(decoder);
+    } catch {
+      return;
+    }
+
+    try {
+      switch (messageType) {
+        case MessageType.DOC:
+          this._handleDocMessage(ws, decoder);
+          break;
+        case MessageType.AWARENESS:
+          this._handleAwarenessMessage(ws, decoder, bytes);
+          break;
+        default:
+          break;
+      }
+    } catch (error) {
+      // A message we cannot read must never take the board down for everybody
+      // else, but it must still be visible when something is wrong.
+      console.error('Bad message', {
+        messageType,
+        error: String(error),
+      });
     }
   }
 
@@ -89,8 +161,8 @@ export class BoardRoom extends DurableObject<Env> {
     code: number,
     reason: string,
   ): Promise<void> {
-    // 1006 is never allowed to be sent back; it only ever means "the
-    // connection dropped". Anything outside 1000-4999 would throw.
+    // 1006 may never be sent back; it only ever means "the connection
+    // dropped". Anything outside 1000-4999 would throw.
     ws.close(code >= 1000 && code < 5000 && code !== 1006 ? code : 1000, reason);
   }
 
@@ -125,9 +197,7 @@ export class BoardRoom extends DurableObject<Env> {
       return;
     }
 
-    // Store before telling anyone, so a change that other people can see is
-    // always a change that survives a restart.
-    this.ctx.storage.sql.exec('INSERT INTO updates (data) VALUES (?)', update);
+    this._storeUpdate(update);
 
     this._broadcastExcept(this._buildSingleUpdateMessage(update), ws);
 
@@ -136,24 +206,145 @@ export class BoardRoom extends DurableObject<Env> {
     this._compactIfNeeded();
   }
 
-  private _buildAllUpdatesMessage(): Uint8Array {
-    const rows = this.ctx.storage.sql
-      .exec<{ idx: number; data: ArrayBuffer }>(
-        'SELECT idx, data FROM updates ORDER BY idx',
+  /**
+   * Claim an empty board for this connection.
+   *
+   * Returns null when this connection is the one that should build the empty
+   * board, and the moment of the original claim when it should instead wait for
+   * somebody else's starting point.
+   */
+  private _claim(): number | null {
+    if (this._updateCount() > 0) {
+      return null;
+    }
+
+    const existing = this.ctx.storage.sql
+      .exec<{ value: number }>(
+        "SELECT value FROM meta WHERE name = 'claimed_at'",
       )
       .toArray();
+
+    if (existing.length === 0) {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO meta (name, value) VALUES ('claimed_at', ?)",
+        Date.now(),
+      );
+
+      return null;
+    }
+
+    const claimedAt = existing[0].value;
+
+    // Long enough ago that the first person clearly never saved anything —
+    // they closed the tab, or never typed. Let this one build the board.
+    if (Date.now() - claimedAt > NEW_BOARD_SETTLE_MS) {
+      this.ctx.storage.sql.exec(
+        "UPDATE meta SET value = ? WHERE name = 'claimed_at'",
+        Date.now(),
+      );
+
+      return null;
+    }
+
+    return claimedAt;
+  }
+
+  /** Write one change to storage, split across rows if it is too big. */
+  private _storeUpdate(update: Uint8Array): void {
+    const gid = this._nextGid();
+
+    for (let start = 0; start < update.length; start += MAX_CHUNK_BYTES) {
+      this.ctx.storage.sql.exec(
+        'INSERT INTO updates (gid, data) VALUES (?, ?)',
+        gid,
+        update.subarray(start, start + MAX_CHUNK_BYTES),
+      );
+    }
+  }
+
+  private _nextGid(): number {
+    return (
+      (this.ctx.storage.sql
+        .exec<{ gid: number | null }>('SELECT MAX(gid) AS gid FROM updates')
+        .one().gid ?? 0) + 1
+    );
+  }
+
+  private _updateCount(): number {
+    return (
+      this.ctx.storage.sql
+        .exec<{ count: number }>(
+          'SELECT COUNT(DISTINCT gid) AS count FROM updates',
+        )
+        .one().count ?? 0
+    );
+  }
+
+  /** Read the stored changes back, each one joined up from its rows. */
+  private _readUpdates(): { highestIdx: number; updates: Uint8Array[] } {
+    const rows = this.ctx.storage.sql
+      .exec<UpdateRow>('SELECT idx, gid, data FROM updates ORDER BY idx')
+      .toArray();
+
+    const byGid = new Map<number, Uint8Array[]>();
+
+    for (const row of rows) {
+      const parts = byGid.get(row.gid);
+      const bytes = new Uint8Array(row.data);
+
+      if (parts == null) {
+        byGid.set(row.gid, [bytes]);
+      } else {
+        parts.push(bytes);
+      }
+    }
+
+    const updates: Uint8Array[] = [];
+
+    for (const parts of byGid.values()) {
+      updates.push(parts.length === 1 ? parts[0] : concat(parts));
+    }
+
+    return { highestIdx: rows.at(-1)?.idx ?? 0, updates };
+  }
+
+  /**
+   * The messages that tell a browser what is on the board.
+   *
+   * The first is always the "here is everything" message, even when the board
+   * is empty, because the browser waits for it before it will accept anything
+   * else. Anything that does not fit in it follows as ordinary single changes,
+   * which the browser applies the same way. This keeps each message well under
+   * any size limit, however big the board gets.
+   */
+  private _buildContentsMessages(): Uint8Array[] {
+    const { highestIdx, updates } = this._readUpdates();
+
+    const firstBatch: Uint8Array[] = [];
+    const leftOver: Uint8Array[] = [];
+
+    let budget = MAX_MESSAGE_BYTES;
+
+    for (const update of updates) {
+      if (firstBatch.length === 0 || update.length <= budget) {
+        firstBatch.push(update);
+        budget -= update.length;
+      } else {
+        leftOver.push(update);
+      }
+    }
 
     const encoder = encoding.createEncoder();
 
     encoding.writeVarUint(encoder, MessageType.DOC);
     encoding.writeVarUint(encoder, ServerDocMessageType.ALL_UPDATES_UNMERGED);
 
-    encoding.writeVarUint(encoder, rows.at(-1)?.idx ?? 0);
+    encoding.writeVarUint(encoder, highestIdx);
 
-    encoding.writeVarUint(encoder, rows.length);
+    encoding.writeVarUint(encoder, firstBatch.length);
 
-    for (const row of rows) {
-      encoding.writeVarUint8Array(encoder, new Uint8Array(row.data));
+    for (const update of firstBatch) {
+      encoding.writeVarUint8Array(encoder, update);
     }
 
     // No re-keying and no snapshots in this version. Both flags stay off, and
@@ -161,7 +352,10 @@ export class BoardRoom extends DurableObject<Env> {
     encoding.writeUint8(encoder, 0);
     encoding.writeUint8(encoder, 0);
 
-    return encoding.toUint8Array(encoder);
+    return [
+      encoding.toUint8Array(encoder),
+      ...leftOver.map((update) => this._buildSingleUpdateMessage(update)),
+    ];
   }
 
   private _buildSingleUpdateMessage(update: Uint8Array): Uint8Array {
@@ -185,42 +379,38 @@ export class BoardRoom extends DurableObject<Env> {
   }
 
   /**
-   * Squash a long list of updates into one. Yjs does the merging, so the
-   * result is the same board in far fewer bytes.
+   * Squash a long list of changes into one. Yjs does the merging, so the result
+   * is the same board in far fewer bytes.
    *
-   * Everything happens in one go with no waiting in the middle, so no new
-   * update can slip in while the list is half replaced.
+   * It all happens in one go with no waiting in the middle, so no new change
+   * can slip in while the list is half replaced.
    */
   private _compactIfNeeded(): void {
-    const count =
-      this.ctx.storage.sql
-        .exec<{ count: number }>('SELECT COUNT(*) AS count FROM updates')
-        .one().count ?? 0;
-
-    if (count <= COMPACT_AFTER_UPDATES) {
+    if (this._updateCount() <= COMPACT_AFTER_UPDATES) {
       return;
     }
 
-    const rows = this.ctx.storage.sql
-      .exec<{ idx: number; data: ArrayBuffer }>(
-        'SELECT idx, data FROM updates ORDER BY idx',
-      )
-      .toArray();
-
-    const highestIdx = rows.at(-1)?.idx ?? 0;
+    const { highestIdx, updates } = this._readUpdates();
 
     let merged: Uint8Array;
 
     try {
-      merged = Y.mergeUpdatesV2(rows.map((row) => new Uint8Array(row.data)));
-    } catch {
-      // A broken update would otherwise take the whole board down on every
-      // save. Leave the list alone; it still works, it is just bigger.
+      merged = Y.mergeUpdatesV2(updates);
+    } catch (error) {
+      // A change we cannot merge would otherwise break every save from now on.
+      // Leaving the list alone is harmless: it still works, it is just bigger.
+      console.error('Could not squash board', String(error));
+      return;
+    }
+
+    // A single change this big could not be sent to a browser in one piece, and
+    // unlike a list it cannot be broken up. Keep the list instead.
+    if (merged.length > MAX_MERGED_BYTES) {
       return;
     }
 
     this.ctx.storage.sql.exec('DELETE FROM updates WHERE idx <= ?', highestIdx);
-    this.ctx.storage.sql.exec('INSERT INTO updates (data) VALUES (?)', merged);
+    this._storeUpdate(merged);
   }
 
   // Presence: where other people's cursors are
@@ -234,14 +424,24 @@ export class BoardRoom extends DurableObject<Env> {
     const numUpdates = decoding.readVarUint(decoder);
 
     for (let i = 0; i < numUpdates; i++) {
+      const update = decoding.readVarUint8Array(decoder);
+
+      // Presence is small by nature. Anything oversized is not presence.
+      if (update.length === 0 || update.length > 16_384) {
+        continue;
+      }
+
       this.ctx.storage.sql.exec(
         'INSERT OR REPLACE INTO awareness (data, expires_at) VALUES (?, ?)',
-        decoding.readVarUint8Array(decoder),
+        update,
         now + AWARENESS_LIFETIME_MS,
       );
     }
 
-    this.ctx.storage.sql.exec('DELETE FROM awareness WHERE expires_at <= ?', now);
+    this.ctx.storage.sql.exec(
+      'DELETE FROM awareness WHERE expires_at <= ?',
+      now,
+    );
 
     // Pass the message straight on, exactly as it arrived.
     this._broadcastExcept(whole, ws);
@@ -285,4 +485,22 @@ export class BoardRoom extends DurableObject<Env> {
       }
     }
   }
+}
+
+function concat(parts: Uint8Array[]): Uint8Array {
+  let length = 0;
+
+  for (const part of parts) {
+    length += part.length;
+  }
+
+  const joined = new Uint8Array(length);
+  let offset = 0;
+
+  for (const part of parts) {
+    joined.set(part, offset);
+    offset += part.length;
+  }
+
+  return joined;
 }

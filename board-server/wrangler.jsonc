@@ -11,6 +11,17 @@
     "ALLOWED_ORIGINS": "http://localhost:60379"
   },
 
+  // Caps password attempts per address. One shared password that anybody can
+  // guess at as fast as they like is the real risk here, far more than any
+  // cleverness about how the password is compared.
+  "ratelimits": [
+    {
+      "name": "AUTH_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 20, "period": 60 }
+    }
+  ],
+
   "durable_objects": {
     "bindings": [{ "name": "BOARD_ROOM", "class_name": "BoardRoom" }]
   },

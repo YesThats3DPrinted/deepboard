@@ -2,9 +2,14 @@
 //
 // Why a pass instead of sending the password every time: a browser cannot put
 // a header on a web socket connection, so the only things it can carry are the
-// address and the sub-protocol. Addresses end up in logs. A pass is short
-// lived, so a leaked one stops working, and the password itself is only ever
+// address and the sub-protocol. Both end up in logs somewhere, so neither is a
+// place for a password. A pass is a different matter: it runs out, so a copy
+// found in a log later is worth nothing, and the password itself is only ever
 // sent once, in the body of a POST.
+//
+// The pass is not tied to one board. There is a single shared password that
+// opens every board, so tying a pass to a board would add round trips and
+// protect nothing.
 
 const encoder = new TextEncoder();
 
