@@ -1,4 +1,5 @@
 import { boot } from 'quasar/wrappers';
+import { startSharedList } from 'src/code/areas/board/shared-list';
 import {
   FIXED_GROUP_ID,
   FIXED_USER_ID,
@@ -33,4 +34,8 @@ export default boot(async ({ store }) => {
   internals.symmetricKeyring = fixedSymmetricKeyring();
 
   internals.realtime.connect();
+
+  // The shared list of board names. Opened here so names are already arriving
+  // by the time the first board is on screen.
+  startSharedList();
 });

@@ -20,9 +20,15 @@ export function useImagePasting() {
           continue;
         }
 
-        if (file.size > 5 * 1024 * 1024) {
+        // One megabyte, not five.
+        //
+        // A pasted picture is stored inside the board itself, and the whole
+        // board travels in one message every time somebody opens it. Big
+        // pictures make that message enormous, and past a point the board
+        // stops loading for everybody with no error to explain why.
+        if (file.size > 1024 * 1024) {
           $quasar().notify({
-            message: 'Cannot upload images larger than 5MB.',
+            message: 'Pictures have to be under 1MB.',
             color: 'negative',
           });
           continue;
